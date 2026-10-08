@@ -1,10 +1,10 @@
 # OCI Terraform repository and authentication plan
 
-Status: proposed, 8 October 2026. This is a plan for a new infrastructure repository; no OCI identities, keys, policies, or cloud resources have been created.
+Status: proposed, 8 October 2026. This is a plan for a new infrastructure repository; no OCI identities, keys, policies, or cloud resources have been created. The application will [start with empty data](CLEAN_START_DECISION.md).
 
 ## Decision: repository layout
 
-Start a separate `smebot-oci-infra` repository. This bot repository currently tracks its entire Python 3.8 virtual environment and bytecode (over 3,200 files), has no `.gitignore` or dependency manifest, and is still an early application prototype. A clean infrastructure repository gives Terraform its own review rules, state handling, and deployment history while the application is cleaned up. This is a workflow choice, **not** a credential boundary: repository separation does not protect a committed key or state file.
+Start a separate `smebot-oci-infra` repository. The bot repository has since removed its tracked virtual environment and added a `.gitignore`, but it remains an early application prototype without a dependency manifest. A clean infrastructure repository gives Terraform its own review rules, state handling, and deployment history. This is a workflow choice, **not** a credential boundary: repository separation does not protect a committed key or state file.
 
 If the same people eventually change the bot and its infrastructure in one release, an `infra/` directory in a cleaned-up application repository is also reasonable. Nothing in OCI or Terraform requires separate repositories. Put a link to the infrastructure repository in the bot README once it exists; pass only needed resource identifiers to the application deployment, not Terraform state or credentials.
 
@@ -25,6 +25,7 @@ Commit `.terraform.lock.hcl` from each root module. Ignore `.terraform/`, `*.tfs
 ## What the current bot actually needs
 
 - `handlers.py` creates a `User` record in Fauna and updates `is_smeowner` by record ID. There is no Fauna read or delete path yet.
+- No Fauna records will be transferred to OCI under the accepted clean-start decision. Provision an empty target store once the data model is defined.
 - Cloudinary is configured and `upload` is imported, but no handler calls it. Object Storage is a future feature rather than an existing upload migration.
 - `main.py` polls Telegram; conversation state exists only in process memory, and only two of the declared states have handlers. OCI infrastructure alone will not make this bot production ready.
 - `Updating_plan.md` is a draft, not an implementation specification. Verify its proposed database service and Always Free eligibility against the current OCI console before writing Terraform. Its AWS-style bucket policy example is not OCI IAM syntax, and OCI Vision is not a drop-in replacement for Cloudinary transformations. Avoid provisioning either for the first authentication test.

@@ -1,3 +1,5 @@
+> **Historical draft — superseded for data migration.** On 8 October 2026 the project owner chose a [clean start with empty application data](CLEAN_START_DECISION.md) because the bot was never meaningfully used. Do not execute the Fauna export/import phase or legacy rollback steps below. The Cloudinary upload path described here is not implemented in the current code, and OCI service/cost claims still need validation. This document remains for context.
+
 Project Analysis Summary
 Based on my analysis of the Telegram bot project, I've identified the following:
 
