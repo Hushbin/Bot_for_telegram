@@ -1,0 +1,59 @@
+# Python virtual environments
+.venv/
+venv/
+env/
+ENV/
+/bin/
+/lib/
+/lib64/
+/include/
+/pyvenv.cfg
+
+# Python bytecode, packaging, and test output
+__pycache__/
+*.py[cod]
+*$py.class
+.Python
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pytype/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+!.env.sample
+*.pem
+*.key
+*.p12
+*.pfx
+/wallet/
+/oci_wallet/
+/Wallet_*.zip
+/wallet_*.zip
+
+# Local databases and logs
+*.db
+*.sqlite
+*.sqlite3
+*.log
+
+# Editors and operating systems
+.idea/
+.vscode/
+.fleet/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
