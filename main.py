@@ -1,35 +1,79 @@
-import handlers
-from telegram.ext import (
-    CommandHandler, CallbackContext,
-    ConversationHandler, MessageHandler,
-    Filters, Updater, CallbackQueryHandler
-)
-from config import TOKEN
+"""SMEbot entry point. Polling is for local development."""
 
-updater = Updater(token=TOKEN, use_context=True)
-print(updater)
-dispatcher = updater.dispatcher
+import logging
+
+from telegram.ext import (
+    ApplicationBuilder,
+    CallbackQueryHandler,
+    CommandHandler,
+    ConversationHandler,
+    MessageHandler,
+    filters,
+)
+
+from config import load_settings
+from database import OracleStore
+from handlers import (
+    BotHandlers, CHOOSING, CLASS_STATE, SME_DETAILS, CHOOSE_PREF,
+    PRODUCT_DETAILS, PRODUCT_PHOTO,
+)
+from storage import MediaStorage
+
+
+def build_application(settings=None, store=None, media=None):
+    settings = settings or load_settings()
+    store = store or OracleStore(settings)
+    media = media or MediaStorage(settings)
+    store.check()  # Fail at startup if the schema, wallet, or DB login is wrong.
+    handlers = BotHandlers(store, media)
+    application = ApplicationBuilder().token(settings.bot_token).concurrent_updates(False).build()
+
+    registration = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", handlers.start),
+            CommandHandler("profile", handlers.profile),
+            CommandHandler("sellerprofile", handlers.seller_profile),
+            CommandHandler("preferences", handlers.preferences),
+        ],
+        states={
+            CHOOSING: [MessageHandler(filters.TEXT & ~filters.COMMAND, handlers.choose)],
+            CLASS_STATE: [CallbackQueryHandler(handlers.classer, pattern=r"^role:")],
+            SME_DETAILS: [MessageHandler(filters.TEXT & ~filters.COMMAND,
+                                         handlers.seller_details)],
+            CHOOSE_PREF: [CallbackQueryHandler(handlers.preference, pattern=r"^cat:")],
+        },
+        fallbacks=[CommandHandler("cancel", handlers.cancel)],
+        allow_reentry=True,
+    )
+    catalog = ConversationHandler(
+        entry_points=[
+            CommandHandler("addproduct", handlers.add_product),
+            CommandHandler("photo", handlers.add_photo),
+        ],
+        states={
+            PRODUCT_DETAILS: [MessageHandler(filters.TEXT & ~filters.COMMAND,
+                                             handlers.product_details)],
+            PRODUCT_PHOTO: [
+                MessageHandler(filters.PHOTO, handlers.photo_for_product),
+                CommandHandler("skip", handlers.skip),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", handlers.cancel)],
+        allow_reentry=True,
+    )
+    application.add_handler(registration)
+    application.add_handler(catalog)
+    application.add_handler(CommandHandler("products", handlers.products))
+    application.add_handler(CommandHandler("product", handlers.product))
+    application.add_handler(CommandHandler("myproducts", handlers.my_products))
+    application.add_handler(CommandHandler("stock", handlers.stock))
+    return application
 
 
 def main():
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler('start', handlers.start)],
-        states={
-            handlers.CHOOSING: [
-                MessageHandler(
-                    Filters.all, handlers.choose
-                )
-            ],
-            handlers.CLASS_STATE: [
-                CallbackQueryHandler(handlers.classer)
-            ]
-        },
-        fallbacks=[CommandHandler('cancel', handlers.cancel)],
-        allow_reentry=True
-    )
-    dispatcher.add_handler(conv_handler)
-    updater.start_polling()
-    updater.idle()
+    logging.basicConfig(level=logging.INFO)
+    build_application().run_polling()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()
