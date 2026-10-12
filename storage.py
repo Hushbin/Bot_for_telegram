@@ -11,6 +11,9 @@ class MediaStorage:
         if settings.oci_auth == "resource_principal":
             signer = oci.auth.signers.get_resource_principals_signer()
             self.client = oci.object_storage.ObjectStorageClient({}, signer=signer)
+        elif settings.oci_auth == "instance_principal":
+            signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
+            self.client = oci.object_storage.ObjectStorageClient({}, signer=signer)
         else:
             config = oci.config.from_file(
                 file_location=settings.oci_config_file,

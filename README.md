@@ -46,7 +46,7 @@ its SQLite file and photos do not sync to OCI.
 
 ### Run with OCI
 
-Use Python 3.11 or newer. This checkout already has the three empty tables, a protected local wallet, and ignored local database credentials. Add your Telegram token to the ignored `.env` file before starting the bot. For a fresh checkout:
+Use Python 3.10 or newer. This checkout already has the three empty tables, a protected local wallet, and ignored local database credentials. Add your Telegram token to the ignored `.env` file before starting the bot. For a fresh checkout:
 
 ```sh
 python3 -m venv .venv
@@ -66,7 +66,7 @@ Create an ignored `.setup.env` (mode `0600`) with a different `DB_SCHEMA_PASSWOR
 .venv/bin/python main.py
 ```
 
-The wallet downloader stores only `tnsnames.ora` and `ewallet.pem` with private permissions. The database uses mTLS; [`python-oracledb` Thin mode](https://python-oracledb.readthedocs.io/en/stable/user_guide/connection_handling.html#mutual-tls-mtls-connection-to-oracle-autonomous-database) requires both files and the wallet password. Keep the ignored `.env`, `.setup.env`, and wallet private. A hosted OCI runtime can set `OCI_AUTH=resource_principal` for Object Storage instead of carrying an API key, once its dynamic group and IAM policy are configured.
+The wallet downloader stores only `tnsnames.ora` and `ewallet.pem` with private permissions. The database uses mTLS; [`python-oracledb` Thin mode](https://python-oracledb.readthedocs.io/en/stable/user_guide/connection_handling.html#mutual-tls-mtls-connection-to-oracle-autonomous-database) requires both files and the wallet password. Keep the ignored `.env`, `.setup.env`, and wallet private. On the OCI Compute VM, set `OCI_AUTH=instance_principal` for Object Storage after creating a matching dynamic group and narrowly scoped IAM policy. OCI Functions use `OCI_AUTH=resource_principal`.
 
 ## Bot commands
 
@@ -88,4 +88,38 @@ All commands run in a private Telegram chat.
 
 The product input format is `name | category | price | stock | description`. A photo must be at most 5 MB. The bot uploads it to a unique private object key and stores the key on the product row. If the database update fails after upload, the bot deletes that exact object version. Photos are never given public Object Storage URLs; `/product` reads the object through the bot's OCI identity and sends it to Telegram.
 
-The bot uses polling for local development. It needs a real Telegram token to run; no token is present in this checkout. A deployment still needs a runtime host, a dedicated OCI identity with only the required bucket object permissions, and secret delivery for `BOT_TOKEN`, `DB_PASSWORD`, and the wallet. The bucket is versioned: future photo bytes and retained versions count against the [Always Free Object Storage allowance](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm).
+The bot uses polling on both local and VM deployments. It needs a real Telegram token to run; no token is present in this checkout. The bucket is versioned: future photo bytes and retained versions count against the [Always Free Object Storage allowance](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm).
+
+## Deploy to the OCI bot VM
+
+The [deploy workflow](.github/workflows/deploy.yml) tests pull requests, then deploys each successful push to `master` (or a manual run on `master`). It builds wheels on Ubuntu 22.04/Python 3.10, opens a fresh OCI Bastion restricted to that runner's IP, copies a commit archive through an SSH tunnel, and activates a systemd release. CI never uploads `.env` or the database wallet. A failed service restart restores the previous release. Bastion and its session are deleted after each job.
+
+One-time VM setup, from a trusted workstation that can SSH to the VM as `ubuntu`:
+
+1. Generate a separate deployment SSH key: `ssh-keygen -t ed25519 -N '' -f ~/.ssh/smebot-deploy -C smebot-deploy`. Keep its private half off Git.
+2. Copy `deploy/bootstrap_vm.sh`, `deploy/activate_release.sh`, `deploy/smebot.service`, and `~/.ssh/smebot-deploy.pub` to one directory on the VM. Run `sudo bash bootstrap_vm.sh /path/to/smebot-deploy.pub` there. This installs Python venv support and creates separate service and deployment users. For example, from this repository:
+
+   ```sh
+   scp deploy/bootstrap_vm.sh deploy/activate_release.sh deploy/smebot.service ~/.ssh/smebot-deploy.pub ubuntu@<bot-public-ip>:/tmp/
+   ssh ubuntu@<bot-public-ip> 'sudo bash /tmp/bootstrap_vm.sh /tmp/smebot-deploy.pub'
+   ```
+3. Install runtime values from [bot.env.example](deploy/bot.env.example) as `/etc/smebot/bot.env`, owned by `root:smebot` with mode `0640`. Put `tnsnames.ora` and `ewallet.pem` in `/etc/smebot/wallet`, owned by `root:smebot` with mode `0640`. Use the existing `SME_BOT` runtime password and wallet password. Set `OCI_AUTH=instance_principal`. Do not put these values in GitHub secrets for deployment.
+4. Apply the infrastructure repository's `environments/host/` Terraform stack. It manages the `smebot-dev-bot-runtime` dynamic group matching **only** the bot instance OCID and a policy limited to object create, read, and delete on `smebot-dev-media`. The bot uses its [instance principal](https://docs.oracle.com/en-us/iaas/Content/Identity/callresources/Configuring_the_SDK_CLI_or_Terraform.htm) for photos. Allow several minutes for a new OCI policy to take effect.
+
+Create a GitHub environment named `dev-bot`, restricted to deployments from `master`. Give it these secrets:
+
+| Secret | Purpose |
+| --- | --- |
+| `OCI_USER_OCID`, `OCI_TENANCY_OCID`, `OCI_FINGERPRINT`, `OCI_API_PRIVATE_KEY` | API key for an OCI IAM user allowed to manage Bastions and sessions in the dev compartment. Use a dedicated CI user. |
+| `BOT_DEPLOY_SSH_PRIVATE_KEY` | Private half of the separate deployment key from step 1. |
+
+Set these environment variables (GitHub **vars**):
+
+| Variable | Value |
+| --- | --- |
+| `BOT_COMPARTMENT_OCID` | `terraform -chdir=environments/host output -raw compartment_ocid` in the infrastructure repo. |
+| `BOT_BASTION_SUBNET_OCID` | `terraform -chdir=environments/host output -raw bot_bastion_subnet_ocid`. |
+| `BOT_PRIVATE_IP` | `terraform -chdir=environments/host output -raw bot_private_ip`. |
+| `BOT_SSH_HOST_KEY` | The VM's trusted SSH host public key, for example `ssh-ed25519 AAAA...`. Obtain it over your existing trusted SSH connection with `ssh ubuntu@<bot-public-ip> 'cat /etc/ssh/ssh_host_ed25519_key.pub'`. |
+
+The CI IAM user needs `manage bastion-family` in the development compartment. The target bot subnet permits SSH only from your workstation CIDR and the dedicated Bastion subnet. The workflow creates a Bastion with the current runner's `/32` allowlist and a one-hour session; it does not open SSH to all GitHub runner addresses. OCI [documents Bastion as free](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm), though the account's service limits still apply.

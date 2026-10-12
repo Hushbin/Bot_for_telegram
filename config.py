@@ -42,8 +42,8 @@ def load_settings() -> Settings:
     if missing:
         raise ValueError("Missing settings: " + ", ".join(missing))
     auth = os.getenv("OCI_AUTH", "config_file")
-    if backend == "oci" and auth not in ("config_file", "resource_principal"):
-        raise ValueError("OCI_AUTH must be config_file or resource_principal")
+    if backend == "oci" and auth not in ("config_file", "instance_principal", "resource_principal"):
+        raise ValueError("OCI_AUTH must be config_file, instance_principal, or resource_principal")
     local_root = Path(__file__).resolve().parent / ".local"
     return Settings(
         backend=backend,

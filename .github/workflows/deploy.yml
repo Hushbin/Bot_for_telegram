@@ -1,0 +1,65 @@
+name: Test and deploy bot
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m unittest discover -s tests -v
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/master'
+    needs: test
+    runs-on: ubuntu-22.04
+    environment: dev-bot
+    concurrency:
+      group: bot-dev-deployment
+      cancel-in-progress: false
+    timeout-minutes: 45
+    env:
+      OCI_REGION: eu-zurich-1
+      BOT_COMPARTMENT_OCID: ${{ vars.BOT_COMPARTMENT_OCID }}
+      BOT_BASTION_SUBNET_OCID: ${{ vars.BOT_BASTION_SUBNET_OCID }}
+      BOT_PRIVATE_IP: ${{ vars.BOT_PRIVATE_IP }}
+      BOT_SSH_HOST_KEY: ${{ vars.BOT_SSH_HOST_KEY }}
+      GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+          cache: pip
+      - name: Build release
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/release/wheelhouse"
+          git archive HEAD | tar -xf - -C "$RUNNER_TEMP/release"
+          python -m pip wheel -r requirements.txt -w "$RUNNER_TEMP/release/wheelhouse"
+          tar -C "$RUNNER_TEMP/release" -czf "$RUNNER_TEMP/${GITHUB_SHA}.tar.gz" .
+          sha256sum "$RUNNER_TEMP/${GITHUB_SHA}.tar.gz" | awk '{print $1}' > "$RUNNER_TEMP/release.sha256"
+      - name: Install OCI CLI
+        run: python -m pip install 'oci-cli>=3.70,<4'
+      - name: Open Bastion, transfer, and activate
+        shell: bash
+        env:
+          OCI_USER_OCID: ${{ secrets.OCI_USER_OCID }}
+          OCI_TENANCY_OCID: ${{ secrets.OCI_TENANCY_OCID }}
+          OCI_FINGERPRINT: ${{ secrets.OCI_FINGERPRINT }}
+          OCI_API_PRIVATE_KEY: ${{ secrets.OCI_API_PRIVATE_KEY }}
+          BOT_DEPLOY_SSH_PRIVATE_KEY: ${{ secrets.BOT_DEPLOY_SSH_PRIVATE_KEY }}
+        run: bash deploy/deploy_via_bastion.sh

@@ -1,0 +1,23 @@
+[Unit]
+Description=SMEbot Telegram poller
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=smebot
+Group=smebot
+WorkingDirectory=/opt/smebot/current
+EnvironmentFile=/etc/smebot/bot.env
+ExecStart=/opt/smebot/current/.venv/bin/python -u /opt/smebot/current/main.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadOnlyPaths=/etc/smebot
+
+[Install]
+WantedBy=multi-user.target
