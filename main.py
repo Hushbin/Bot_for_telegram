@@ -12,19 +12,25 @@ from telegram.ext import (
 )
 
 from config import load_settings
-from database import OracleStore
 from handlers import (
     BotHandlers, CHOOSING, CLASS_STATE, SME_DETAILS, CHOOSE_PREF,
     PRODUCT_DETAILS, PRODUCT_PHOTO,
 )
-from storage import MediaStorage
 
 
 def build_application(settings=None, store=None, media=None):
     settings = settings or load_settings()
-    store = store or OracleStore(settings)
-    media = media or MediaStorage(settings)
-    store.check()  # Fail at startup if the schema, wallet, or DB login is wrong.
+    if store is None or media is None:
+        if settings.backend == "local":
+            from local_backend import LocalMediaStorage, SQLiteStore
+            store = store or SQLiteStore(settings.local_db_path)
+            media = media or LocalMediaStorage(settings.local_media_dir)
+        else:
+            from database import OracleStore
+            from storage import MediaStorage
+            store = store or OracleStore(settings)
+            media = media or MediaStorage(settings)
+    store.check()
     handlers = BotHandlers(store, media)
     application = ApplicationBuilder().token(settings.bot_token).concurrent_updates(False).build()
 

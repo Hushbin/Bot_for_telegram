@@ -16,6 +16,34 @@ The bot does not have orders, payments, reservations, or seller approval, so it 
 
 ## Local setup
 
+### Run without OCI
+
+The local backend uses SQLite for profiles, sellers, and products, and files for
+photos. It creates `.local/bot.sqlite3` and `.local/media/` automatically; both
+are ignored by Git. No OCI account, wallet, database, or bucket is needed.
+You still need a Telegram bot token and internet access to Telegram because the
+bot receives messages by polling. Use a separate test bot token if your deployed
+bot is already polling; only one poller should use a token at a time.
+
+```sh
+cd Bot_for_telegram
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+cp .env.local.example .env
+chmod 600 .env
+# Replace BOT_TOKEN in .env with your test bot's token.
+.venv/bin/python main.py
+```
+
+If `.env` already exists with OCI credentials, keep it and change only
+`APP_BACKEND=local`; the OCI settings are ignored in this mode. From Telegram,
+send `/start`, then try `/sellerprofile`, `/addproduct`, `/products all`, and
+`/product <ID>`. Restarting the bot keeps the local data. To start over, stop
+the bot and delete `.local/`. The local backend is for functional development;
+its SQLite file and photos do not sync to OCI.
+
+### Run with OCI
+
 Use Python 3.11 or newer. This checkout already has the three empty tables, a protected local wallet, and ignored local database credentials. Add your Telegram token to the ignored `.env` file before starting the bot. For a fresh checkout:
 
 ```sh
