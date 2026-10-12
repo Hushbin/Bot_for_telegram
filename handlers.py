@@ -75,7 +75,7 @@ def product_text(product, *, detail=False):
     return (
         f'#{product["product_id"]} {product["name"]}\n'
         f'{product["business_name"]} · {product["category"]}\n'
-        f'Price: NGN {amount:.2f} · In stock: {product["stock_quantity"]}\n'
+        f'Price: USD {amount:.2f} · In stock: {product["stock_quantity"]}\n'
         f'{description}'
     ).strip()
 
@@ -253,7 +253,7 @@ class BotHandlers:
             await update.message.reply_text("Register a seller profile with /sellerprofile first.")
             return ConversationHandler.END
         await update.message.reply_text(
-            "Send: name | category | price in NGN | stock | description\n"
+            "Send: name | category | price in USD | stock | description\n"
             "Category keys: clothing, hardware, food, art.\n"
             "Example: Blue shirt | clothing | 19.99 | 5 | Cotton shirt"
         )

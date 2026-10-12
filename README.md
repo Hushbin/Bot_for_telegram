@@ -8,9 +8,11 @@ Telegram bot backed by the existing OCI development Autonomous JSON Database and
 | --- | --- | --- |
 | `SME_SCHEMA.USERS` | One profile per Telegram user | Telegram user ID, name, email, phone, role, preferred category |
 | `SME_SCHEMA.SELLERS` | Business profile for a registered user | Business name, email, address, phone |
-| `SME_SCHEMA.PRODUCTS` | Seller catalog and stock | Category, NGN price in kobo, quantity, optional private photo object key |
+| `SME_SCHEMA.PRODUCTS` | Seller catalog and stock | Category, USD price in cents, quantity, optional private photo object key |
 
 The bot does not have orders, payments, reservations, or seller approval, so it does not create tables for those features. Product photos stay in Object Storage; the database stores only their private object keys. Customer preference is one column because the current UI chooses one category. A Telegram user ID, rather than a chat ID or a temporary Fauna record ID, identifies a profile across restarts.
+
+For compatibility with existing databases, the price column is still named `price_kobo`; it now stores USD cents. Reprice any products entered in NGN before displaying them with the USD version of the bot. No exchange conversion is performed.
 
 `scripts/setup_db.py` creates the `SME_SCHEMA` owner and `SME_BOT` runtime user. The owner has a 20 MB quota and DDL privileges for these tables; the runtime user has only `CREATE SESSION` plus `SELECT`, `INSERT`, and `UPDATE` on the three tables. It has no schema creation, deletion, or ADMIN privileges. The script is rerunnable and skips existing tables and indexes; it does **not** rotate existing user passwords or perform future schema migrations.
 
@@ -76,7 +78,7 @@ All commands run in a private Telegram chat.
 | `/profile` | Update personal details |
 | `/sellerprofile` | Create or update a business profile |
 | `/preferences` | Choose a catalog category |
-| `/addproduct` | Add name, category, NGN price, stock, description, then one optional photo |
+| `/addproduct` | Add name, category, USD price, stock, description, then one optional photo |
 | `/photo <ID>` | Attach a photo to one of your products that has none |
 | `/products [all\|clothing\|hardware\|food\|art]` | Browse the latest 20 products |
 | `/product <ID>` | View details and the private bucket photo if present |

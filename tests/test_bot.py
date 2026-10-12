@@ -191,6 +191,18 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.media.objects, {})
         self.assertIsNone(self.store.products[1]["photo_object_key"])
 
+    async def test_product_price_is_usd(self):
+        self.store.upsert_user(42, "Jane", "jane@example.com", "+1234567890")
+        self.store.upsert_seller(42, "Shop", "shop@example.com", "Street", "+1234567890")
+        prompt = FakeMessage()
+        self.assertEqual(await self.bot.add_product(update(prompt), self.context), PRODUCT_DETAILS)
+        self.assertIn("price in USD", prompt.replies[0][1])
+        self.store.create_product(42, "Shirt", "Clothing/Fashion", None, 1999, 2)
+        self.context.args = ["1"]
+        shown = FakeMessage()
+        await self.bot.product(update(shown), self.context)
+        self.assertIn("Price: USD 19.99", shown.replies[0][1])
+
     def test_product_validation(self):
         for text in ("x | clothing | -1 | 2 | d",
                      "x | clothing | 1.001 | 2 | d",
