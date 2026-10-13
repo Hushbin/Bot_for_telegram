@@ -1,9 +1,12 @@
 """SQLite and filesystem adapters for developing the bot without OCI."""
 
 import sqlite3
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
+
+ERASED = "[deleted]"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
@@ -11,15 +14,18 @@ CREATE TABLE IF NOT EXISTS users (
     full_name TEXT NOT NULL,
     email TEXT NOT NULL,
     phone TEXT NOT NULL,
+    phone_verified INTEGER NOT NULL DEFAULT 0 CHECK (phone_verified IN (0, 1)),
     role TEXT NOT NULL DEFAULT 'CUSTOMER' CHECK (role IN ('CUSTOMER', 'SELLER')),
-    preferred_category TEXT
+    preferred_category TEXT,
+    deleted_at TEXT
 );
 CREATE TABLE IF NOT EXISTS sellers (
     telegram_user_id INTEGER PRIMARY KEY REFERENCES users(telegram_user_id),
     business_name TEXT NOT NULL,
     business_email TEXT NOT NULL,
     address TEXT NOT NULL,
-    business_phone TEXT NOT NULL
+    business_phone TEXT NOT NULL,
+    deleted_at TEXT
 );
 CREATE TABLE IF NOT EXISTS products (
     product_id INTEGER PRIMARY KEY,
@@ -29,12 +35,26 @@ CREATE TABLE IF NOT EXISTS products (
     description TEXT,
     price_kobo INTEGER NOT NULL CHECK (price_kobo >= 0),
     stock_quantity INTEGER NOT NULL CHECK (stock_quantity >= 0),
-    photo_object_key TEXT
+    photo_object_key TEXT,
+    photo_version_id TEXT,
+    deleted_at TEXT
 );
 CREATE INDEX IF NOT EXISTS products_category_idx ON products(category, product_id);
 CREATE INDEX IF NOT EXISTS products_seller_idx ON products(seller_telegram_user_id, product_id);
 """
 
+# Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an existing
+# .local/bot.sqlite3 untouched, so these are added in place when missing.
+COLUMN_MIGRATIONS = (
+    ("users", "phone_verified", "INTEGER NOT NULL DEFAULT 0"),
+    ("users", "deleted_at", "TEXT"),
+    ("sellers", "deleted_at", "TEXT"),
+    ("products", "deleted_at", "TEXT"),
+    ("products", "photo_version_id", "TEXT"),
+)
+
+USER_COLUMNS = "telegram_user_id, full_name, email, phone, phone_verified, role, preferred_category"
+SELLER_COLUMNS = "telegram_user_id, business_name, business_email, address, business_phone"
 PRODUCT_COLUMNS = """
     p.product_id, p.seller_telegram_user_id, p.name, p.category,
     p.description, p.price_kobo, p.stock_quantity, p.photo_object_key,
@@ -48,12 +68,26 @@ class SQLiteStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
+            for table, column, definition in COLUMN_MIGRATIONS:
+                existing = {row["name"] for row in
+                            connection.execute(f"PRAGMA table_info({table})")}
+                if column not in existing:
+                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
+    @contextmanager
     def connect(self):
+        """Yield a connection that commits on success, rolls back on error, then closes.
+
+        sqlite3's own context manager only commits or rolls back; it never closes.
+        """
         connection = sqlite3.connect(self.path, timeout=10)
-        connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA foreign_keys = ON")
-        return connection
+        try:
+            connection.row_factory = sqlite3.Row
+            connection.execute("PRAGMA foreign_keys = ON")
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def check(self):
         with self.connect() as connection:
@@ -62,31 +96,26 @@ class SQLiteStore:
     def get_user(self, telegram_user_id):
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM users WHERE telegram_user_id = ?", (telegram_user_id,)
+                f"SELECT {USER_COLUMNS} FROM users "
+                "WHERE telegram_user_id = ? AND deleted_at IS NULL", (telegram_user_id,)
             ).fetchone()
-            return dict(row) if row else None
+            if row is None:
+                return None
+            user = dict(row)
+            user["phone_verified"] = bool(user["phone_verified"])
+            return user
 
-    def upsert_user(self, telegram_user_id, full_name, email, phone):
+    def upsert_user(self, telegram_user_id, full_name, email, phone, phone_verified=False):
         with self.connect() as connection:
             connection.execute("""
-                INSERT INTO users (telegram_user_id, full_name, email, phone)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO users (telegram_user_id, full_name, email, phone, phone_verified)
+                VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(telegram_user_id) DO UPDATE SET
                     full_name=excluded.full_name, email=excluded.email,
-                    phone=excluded.phone
-            """, (telegram_user_id, full_name, email, phone))
+                    phone=excluded.phone, phone_verified=excluded.phone_verified,
+                    deleted_at=NULL
+            """, (telegram_user_id, full_name, email, phone, int(phone_verified)))
         return self.get_user(telegram_user_id)
-
-    def set_role(self, telegram_user_id, role):
-        if role not in ("CUSTOMER", "SELLER"):
-            raise ValueError("Invalid role")
-        with self.connect() as connection:
-            cursor = connection.execute(
-                "UPDATE users SET role = ? WHERE telegram_user_id = ?",
-                (role, telegram_user_id),
-            )
-            if cursor.rowcount != 1:
-                raise LookupError("User not found")
 
     def set_preference(self, telegram_user_id, category):
         with self.connect() as connection:
@@ -106,7 +135,8 @@ class SQLiteStore:
                     business_name=excluded.business_name,
                     business_email=excluded.business_email,
                     address=excluded.address,
-                    business_phone=excluded.business_phone
+                    business_phone=excluded.business_phone,
+                    deleted_at=NULL
             """, (telegram_user_id, business_name, business_email,
                   address, business_phone))
             connection.execute(
@@ -117,7 +147,8 @@ class SQLiteStore:
     def get_seller(self, telegram_user_id):
         with self.connect() as connection:
             row = connection.execute(
-                "SELECT * FROM sellers WHERE telegram_user_id = ?",
+                f"SELECT {SELLER_COLUMNS} FROM sellers "
+                "WHERE telegram_user_id = ? AND deleted_at IS NULL",
                 (telegram_user_id,),
             ).fetchone()
             return dict(row) if row else None
@@ -133,12 +164,25 @@ class SQLiteStore:
                   price_kobo, stock_quantity))
             return cursor.lastrowid
 
-    def set_product_photo(self, seller_id, product_id, object_key):
+    def update_product(self, seller_id, product_id, name, category, description,
+                       price_kobo, stock_quantity):
         with self.connect() as connection:
             cursor = connection.execute("""
-                UPDATE products SET photo_object_key = ?
+                UPDATE products SET name = ?, category = ?, description = ?,
+                       price_kobo = ?, stock_quantity = ?
                 WHERE product_id = ? AND seller_telegram_user_id = ?
-            """, (object_key, product_id, seller_id))
+                  AND deleted_at IS NULL
+            """, (name, category, description, price_kobo, stock_quantity,
+                  product_id, seller_id))
+            return cursor.rowcount == 1
+
+    def set_product_photo(self, seller_id, product_id, object_key, version_id=None):
+        with self.connect() as connection:
+            cursor = connection.execute("""
+                UPDATE products SET photo_object_key = ?, photo_version_id = ?
+                WHERE product_id = ? AND seller_telegram_user_id = ?
+                  AND deleted_at IS NULL
+            """, (object_key, version_id, product_id, seller_id))
             if cursor.rowcount != 1:
                 raise LookupError("Product not found for this seller")
 
@@ -147,6 +191,7 @@ class SQLiteStore:
             cursor = connection.execute("""
                 UPDATE products SET stock_quantity = ?
                 WHERE product_id = ? AND seller_telegram_user_id = ?
+                  AND deleted_at IS NULL
             """, (quantity, product_id, seller_id))
             return cursor.rowcount == 1
 
@@ -155,12 +200,12 @@ class SQLiteStore:
             row = connection.execute(f"""
                 SELECT {PRODUCT_COLUMNS} FROM products p
                 JOIN sellers s ON s.telegram_user_id = p.seller_telegram_user_id
-                WHERE p.product_id = ?
+                WHERE p.product_id = ? AND p.deleted_at IS NULL
             """, (product_id,)).fetchone()
             return dict(row) if row else None
 
     def list_products(self, category=None, seller_id=None):
-        where = []
+        where = ["p.deleted_at IS NULL"]
         values = []
         if category is not None:
             where.append("p.category = ?")
@@ -168,14 +213,55 @@ class SQLiteStore:
         if seller_id is not None:
             where.append("p.seller_telegram_user_id = ?")
             values.append(seller_id)
-        condition = "WHERE " + " AND ".join(where) if where else ""
         with self.connect() as connection:
             rows = connection.execute(f"""
                 SELECT {PRODUCT_COLUMNS} FROM products p
                 JOIN sellers s ON s.telegram_user_id = p.seller_telegram_user_id
-                {condition} ORDER BY p.product_id DESC LIMIT 20
+                WHERE {" AND ".join(where)} ORDER BY p.product_id DESC LIMIT 20
             """, values).fetchall()
             return [dict(row) for row in rows]
+
+    def count_products(self, seller_id):
+        with self.connect() as connection:
+            return connection.execute(
+                "SELECT COUNT(*) FROM products "
+                "WHERE seller_telegram_user_id = ? AND deleted_at IS NULL", (seller_id,)
+            ).fetchone()[0]
+
+    def erase_user(self, telegram_user_id):
+        """Overwrite a user's personal data and hide their products, in one transaction.
+
+        Only UPDATEs are used, so the runtime database account needs no DELETE grant.
+        The numeric Telegram ID and the erasure time remain. Returns the stored photos
+        as (object_key, version_id) pairs so the caller can delete the objects; an
+        unknown or already erased user returns an empty list.
+        """
+        with self.connect() as connection:
+            cursor = connection.execute("""
+                UPDATE users SET full_name = ?, email = ?, phone = ?, phone_verified = 0,
+                       role = 'CUSTOMER', preferred_category = NULL,
+                       deleted_at = CURRENT_TIMESTAMP
+                WHERE telegram_user_id = ? AND deleted_at IS NULL
+            """, (ERASED, ERASED, ERASED, telegram_user_id))
+            if cursor.rowcount != 1:
+                return []
+            connection.execute("""
+                UPDATE sellers SET business_name = ?, business_email = ?, address = ?,
+                       business_phone = ?, deleted_at = CURRENT_TIMESTAMP
+                WHERE telegram_user_id = ? AND deleted_at IS NULL
+            """, (ERASED, ERASED, ERASED, ERASED, telegram_user_id))
+            photos = [(row["photo_object_key"], row["photo_version_id"]) for row in
+                      connection.execute("""
+                          SELECT photo_object_key, photo_version_id FROM products
+                          WHERE seller_telegram_user_id = ? AND photo_object_key IS NOT NULL
+                      """, (telegram_user_id,))]
+            connection.execute("""
+                UPDATE products SET name = ?, description = NULL, stock_quantity = 0,
+                       photo_object_key = NULL, photo_version_id = NULL,
+                       deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP)
+                WHERE seller_telegram_user_id = ?
+            """, (ERASED, telegram_user_id))
+            return photos
 
 
 class LocalMediaStorage:
@@ -212,3 +298,9 @@ class LocalMediaStorage:
         if version_id != object_key:
             raise ValueError("Invalid local photo version")
         self._path(object_key).unlink()
+
+    def delete_photo(self, object_key, version_id=None):
+        """Remove a stored photo; a photo that is already gone counts as removed."""
+        if version_id not in (None, object_key):
+            raise ValueError("Invalid local photo version")
+        self._path(object_key).unlink(missing_ok=True)

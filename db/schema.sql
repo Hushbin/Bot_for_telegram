@@ -1,12 +1,18 @@
 -- Owned by SME_SCHEMA. The bot connects as SME_BOT and has DML only.
+-- deleted_at marks erased rows: personal columns are overwritten with '[deleted]'
+-- rather than the row being removed, so the runtime user needs no DELETE grant.
+-- Keep scripts/setup_db.py COLUMN_MIGRATIONS in step with any column added here.
 CREATE TABLE users (
     telegram_user_id NUMBER(19) PRIMARY KEY,
     full_name VARCHAR2(160 CHAR) NOT NULL,
     email VARCHAR2(254 CHAR) NOT NULL,
     phone VARCHAR2(40 CHAR) NOT NULL,
+    phone_verified NUMBER(1) DEFAULT 0 NOT NULL
+        CHECK (phone_verified IN (0, 1)),
     role VARCHAR2(8 CHAR) DEFAULT 'CUSTOMER' NOT NULL
         CHECK (role IN ('CUSTOMER', 'SELLER')),
     preferred_category VARCHAR2(80 CHAR),
+    deleted_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL
 );
@@ -18,6 +24,7 @@ CREATE TABLE sellers (
     business_email VARCHAR2(254 CHAR) NOT NULL,
     address VARCHAR2(400 CHAR) NOT NULL,
     business_phone VARCHAR2(40 CHAR) NOT NULL,
+    deleted_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL
 );
@@ -32,6 +39,8 @@ CREATE TABLE products (
     price_kobo NUMBER(12) NOT NULL CHECK (price_kobo >= 0),
     stock_quantity NUMBER(10) NOT NULL CHECK (stock_quantity >= 0),
     photo_object_key VARCHAR2(512 CHAR),
+    photo_version_id VARCHAR2(128 CHAR),
+    deleted_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL
 );

@@ -1,93 +1,21 @@
-import io
 import unittest
 from types import SimpleNamespace
 
 from telegram.ext import ConversationHandler
 
+from fakes import FakeMedia, FakeStore
 from handlers import (
-    BotHandlers, CHOOSING, CLASS_STATE, SME_DETAILS, PRODUCT_DETAILS,
-    PRODUCT_PHOTO, parse_product,
+    BotHandlers, CHOOSING, CLASS_STATE, PHONE, SME_DETAILS, PRODUCT_DETAILS,
+    PRODUCT_PHOTO, parse_business, parse_name_email, parse_product,
+    parse_telegram_phone, clean_phone,
 )
 
 
-class FakeStore:
-    def __init__(self):
-        self.users = {}
-        self.sellers = {}
-        self.products = {}
-        self.fail_photo_update = False
-
-    def get_user(self, user_id):
-        return self.users.get(user_id)
-
-    def upsert_user(self, user_id, name, email, phone):
-        user = self.users.setdefault(user_id, {"role": "CUSTOMER", "preferred_category": None})
-        user.update(telegram_user_id=user_id, full_name=name, email=email, phone=phone)
-        return user.copy()
-
-    def set_role(self, user_id, role):
-        self.users[user_id]["role"] = role
-
-    def set_preference(self, user_id, category):
-        self.users[user_id]["preferred_category"] = category
-
-    def upsert_seller(self, user_id, *business):
-        self.sellers[user_id] = business
-        self.set_role(user_id, "SELLER")
-
-    def get_seller(self, user_id):
-        return self.sellers.get(user_id)
-
-    def create_product(self, user_id, name, category, description, price_kobo, stock):
-        product_id = len(self.products) + 1
-        self.products[product_id] = dict(
-            product_id=product_id, seller_telegram_user_id=user_id, name=name,
-            category=category, description=description, price_kobo=price_kobo,
-            stock_quantity=stock, photo_object_key=None, business_name="Shop",
-        )
-        return product_id
-
-    def get_product(self, product_id):
-        return self.products.get(product_id)
-
-    def set_product_photo(self, user_id, product_id, key):
-        if self.fail_photo_update:
-            raise RuntimeError("Database unavailable")
-        self.products[product_id]["photo_object_key"] = key
-
-    def set_stock(self, user_id, product_id, stock):
-        product = self.products.get(product_id)
-        if not product or product["seller_telegram_user_id"] != user_id:
-            return False
-        product["stock_quantity"] = stock
-        return True
-
-    def list_products(self, category=None, seller_id=None):
-        return [p for p in self.products.values()
-                if (category is None or p["category"] == category)
-                and (seller_id is None or p["seller_telegram_user_id"] == seller_id)]
-
-
-class FakeMedia:
-    def __init__(self):
-        self.objects = {}
-
-    def put_product_photo(self, user_id, product_id, raw):
-        key = f"products/{user_id}/{product_id}/photo.jpg"
-        self.objects[key] = raw
-        return key, "test-version"
-
-    def get_photo(self, key):
-        return self.objects[key]
-
-    def delete_version(self, key, version_id):
-        del self.objects[key]
-
-
 class FakeMessage:
-    def __init__(self, text=None, photo=None):
+    def __init__(self, text=None, photo=None, message_id=1):
         self.text = text
         self.photo = photo or []
+        self.message_id = message_id
         self.replies = []
 
     async def reply_text(self, text, **kwargs):
@@ -103,7 +31,7 @@ class FakeQuery:
         self.message = message
         self.answered = False
 
-    async def answer(self):
+    async def answer(self, *args, **kwargs):
         self.answered = True
 
 
@@ -132,11 +60,19 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
         self.bot = BotHandlers(self.store, self.media)
         self.context = SimpleNamespace(user_data={}, args=[])
 
+    async def register(self, user_id=42, phone="+1234567890"):
+        await self.bot.choose(update(FakeMessage("Jane Doe, jane@example.com"), user_id), self.context)
+        await self.bot.phone_text(update(FakeMessage(phone), user_id), self.context)
+
     async def test_seller_product_photo_and_repeat_start(self):
         first = FakeMessage()
         self.assertEqual(await self.bot.start(update(first), self.context), CHOOSING)
-        details = FakeMessage("Jane Doe, jane@example.com, +1234567890")
-        self.assertEqual(await self.bot.choose(update(details), self.context), CLASS_STATE)
+        self.assertIn("What I store", first.replies[0][1])
+        details = FakeMessage("Jane Doe, jane@example.com")
+        self.assertEqual(await self.bot.choose(update(details), self.context), PHONE)
+        phone = FakeMessage("+1234567890")
+        self.assertEqual(await self.bot.phone_text(update(phone), self.context), CLASS_STATE)
+        self.assertIs(self.store.users[42]["phone_verified"], False)
         choose = FakeQuery("role:seller", FakeMessage())
         self.assertEqual(await self.bot.classer(update(query=choose), self.context), SME_DETAILS)
         self.assertTrue(choose.answered)
@@ -160,6 +96,7 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
                          ConversationHandler.END)
         self.assertEqual(self.media.objects[self.store.products[1]["photo_object_key"]],
                          b"\xff\xd8\xff\x00")
+        self.assertEqual(self.store.products[1]["photo_version_id"], "test-version")
         view = FakeMessage()
         self.context.args = ["1"]
         await self.bot.product(update(view), self.context)
@@ -177,6 +114,30 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
         await self.bot.stock(update(other, user_id=99), self.context)
         self.assertEqual(self.store.products[1]["stock_quantity"], 2)
         self.assertIn("not yours", other.replies[0][1])
+
+    async def test_invalid_phone_asks_again_and_stores_nothing(self):
+        await self.bot.choose(update(FakeMessage("Jane Doe, jane@example.com")), self.context)
+        self.assertEqual(
+            await self.bot.phone_text(update(FakeMessage("call me")), self.context), PHONE)
+        self.assertEqual(self.store.users, {})
+
+    async def test_phone_step_without_a_draft_restarts_politely(self):
+        message = FakeMessage("+1234567890")
+        self.assertEqual(await self.bot.phone_text(update(message), self.context),
+                         ConversationHandler.END)
+        self.assertIn("/start", message.replies[0][1])
+
+    async def test_telegram_contact_is_verified_only_when_it_is_the_users_own(self):
+        await self.bot.choose(update(FakeMessage("Jane Doe, jane@example.com")), self.context)
+        foreign = FakeMessage()
+        foreign.contact = SimpleNamespace(user_id=7, phone_number="15550001")
+        self.assertEqual(await self.bot.phone_contact(update(foreign), self.context), PHONE)
+        self.assertEqual(self.store.users, {})
+        own = FakeMessage()
+        own.contact = SimpleNamespace(user_id=42, phone_number="15550001")
+        self.assertEqual(await self.bot.phone_contact(update(own), self.context), CLASS_STATE)
+        self.assertEqual(self.store.users[42]["phone"], "+15550001")
+        self.assertIs(self.store.users[42]["phone_verified"], True)
 
     async def test_failed_photo_db_update_removes_uploaded_version(self):
         self.store.upsert_user(42, "Jane", "jane@example.com", "+1234567890")
@@ -210,3 +171,38 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
                      "x | clothing | 1 | -1 | d"):
             with self.subTest(text=text), self.assertRaises(ValueError):
                 parse_product(text)
+
+
+class ParserTests(unittest.TestCase):
+    def test_name_may_contain_commas(self):
+        self.assertEqual(parse_name_email("Doe, Jane,  jane@example.com "),
+                         ("Doe, Jane", "jane@example.com"))
+
+    def test_name_and_email_errors(self):
+        for text in ("Jane Doe", "Jane Doe, not-an-email", ", jane@example.com", "x" * 161 + ",a@b.co"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                parse_name_email(text)
+
+    def test_business_address_may_contain_commas(self):
+        self.assertEqual(
+            parse_business("Shop, shop@example.com, 1 Main St, Springfield, +1234567890"),
+            ("Shop", "shop@example.com", "1 Main St, Springfield", "+1234567890"))
+
+    def test_business_errors(self):
+        for text in ("Shop, shop@example.com, +1234567890",
+                     "Shop, bad, Street, +1234567890",
+                     "Shop, shop@example.com, Street, abc",
+                     "Shop, shop@example.com, " + "x" * 401 + ", +1234567890"):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                parse_business(text)
+
+    def test_telegram_numbers_get_a_plus_prefix(self):
+        self.assertEqual(parse_telegram_phone("15550001234"), "+15550001234")
+        self.assertEqual(parse_telegram_phone("+15550001234"), "+15550001234")
+        with self.assertRaises(ValueError):
+            parse_telegram_phone("12")
+
+    def test_typed_phone_validation(self):
+        self.assertEqual(clean_phone(" +1 (555) 000-1234 "), "+1 (555) 000-1234")
+        with self.assertRaises(ValueError):
+            clean_phone("555-CALL-NOW")

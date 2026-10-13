@@ -1,9 +1,13 @@
 """Private OCI Object Storage adapter; object keys are never public URLs."""
 
 import io
+import logging
 from uuid import uuid4
 
 import oci
+
+
+LOG = logging.getLogger(__name__)
 
 
 class MediaStorage:
@@ -47,3 +51,19 @@ class MediaStorage:
         self.client.delete_object(
             self.namespace, self.bucket, object_key, version_id=version_id
         )
+
+    def delete_photo(self, object_key: str, version_id=None) -> None:
+        """Remove a stored photo; a photo that is already gone counts as removed.
+
+        Without a version ID a versioned bucket only gets a delete marker and keeps the
+        bytes, so photos stored without one need manual cleanup.
+        """
+        try:
+            if version_id:
+                self.delete_version(object_key, version_id)
+                return
+            LOG.warning("No version ID stored for %s; only a delete marker is created", object_key)
+            self.client.delete_object(self.namespace, self.bucket, object_key)
+        except oci.exceptions.ServiceError as exc:
+            if exc.status != 404:
+                raise

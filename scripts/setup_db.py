@@ -74,6 +74,30 @@ def create_user(cursor, username: str, secret: str, *, owner: bool) -> None:
     print(f"Created {username}")
 
 
+# Columns added after the first release, as (table, column, definition). CREATE TABLE
+# in schema.sql covers fresh databases; these bring an existing database up to date.
+COLUMN_MIGRATIONS = (
+    ("USERS", "PHONE_VERIFIED", "NUMBER(1) DEFAULT 0 NOT NULL CHECK (phone_verified IN (0, 1))"),
+    ("USERS", "DELETED_AT", "TIMESTAMP WITH TIME ZONE"),
+    ("SELLERS", "DELETED_AT", "TIMESTAMP WITH TIME ZONE"),
+    ("PRODUCTS", "DELETED_AT", "TIMESTAMP WITH TIME ZONE"),
+    ("PRODUCTS", "PHOTO_VERSION_ID", "VARCHAR2(128 CHAR)"),
+)
+
+
+def missing_column_statements(existing: dict[str, set[str]]) -> list[str]:
+    """ALTER statements for migration columns absent from tables that already exist.
+
+    `existing` maps upper-case table name to its upper-case column names. A table
+    that does not exist yet is skipped because schema.sql creates it with every column.
+    """
+    return [
+        f"ALTER TABLE {table} ADD ({column} {definition})"
+        for table, column, definition in COLUMN_MIGRATIONS
+        if table in existing and column not in existing[table]
+    ]
+
+
 def statements() -> list[str]:
     raw = (ROOT / "db" / "schema.sql").read_text()
     raw = "\n".join(line for line in raw.splitlines() if not line.lstrip().startswith("--"))
@@ -109,6 +133,13 @@ def main() -> None:
                     continue
                 if words[:2] == ["CREATE", "INDEX"] and words[2].upper() in indexes:
                     continue
+                cursor.execute(statement)
+            cursor.execute("SELECT table_name, column_name FROM user_tab_columns")
+            columns: dict[str, set[str]] = {}
+            for table, column in cursor.fetchall():
+                columns.setdefault(table, set()).add(column)
+            for statement in missing_column_statements(columns):
+                print(f"Migrating: {statement}")
                 cursor.execute(statement)
             for table in TABLES:
                 cursor.execute(f"GRANT SELECT, INSERT, UPDATE ON {table} TO {RUNTIME}")
