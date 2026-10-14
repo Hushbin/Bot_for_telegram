@@ -12,16 +12,12 @@ from telegram import (
 )
 from telegram.ext import ConversationHandler
 
+from catalog import CATEGORIES, DEFAULT_CURRENCY, MINOR_UNITS_PER_MAJOR, category_label
+
 
 LOG = logging.getLogger(__name__)
 (CHOOSING, CLASS_STATE, SME_DETAILS, CHOOSE_PREF, PRODUCT_DETAILS, PRODUCT_PHOTO,
  PHONE, CONFIRM_ERASE, PRODUCT_ID, PHOTO_ID, STOCK_INPUT, BROWSE_CATEGORY) = range(12)
-CATEGORIES = {
-    "clothing": "Clothing/Fashion",
-    "hardware": "Hardware Accessories",
-    "food": "Food/Kitchen Ware",
-    "art": "Art & Design",
-}
 MAX_PHOTO_BYTES = 5 * 1024 * 1024
 
 PRIVACY_NOTICE = (
@@ -134,25 +130,26 @@ def parse_product(text):
     if len(fields) != 5:
         raise ValueError("Use: name | category | price | stock | description")
     name, category_key, price_text, stock_text, description = fields
-    category = CATEGORIES.get(category_key.lower())
-    if not 1 <= len(name) <= 160 or category is None or len(description) > 1000:
+    category = category_key.lower()  # the key, not the label, is what gets stored
+    if not 1 <= len(name) <= 160 or category not in CATEGORIES or len(description) > 1000:
         raise ValueError("Check name, category key, and description length (max 1000).")
     try:
         price = Decimal(price_text)
-        cents = price * 100
-        if not price.is_finite() or price < 0 or cents != cents.to_integral_value():
+        minor = price * MINOR_UNITS_PER_MAJOR
+        if not price.is_finite() or price < 0 or minor != minor.to_integral_value():
             raise ValueError("Price must be a nonnegative amount with at most two decimals.")
-        price_kobo = int(cents)
+        price_minor = int(minor)
         quantity = int(stock_text)
-        if not 0 <= price_kobo < 10**12 or not 0 <= quantity < 10**10:
+        if not 0 <= price_minor < 10**12 or not 0 <= quantity < 10**10:
             raise ValueError("Price or stock is out of range.")
     except (InvalidOperation, OverflowError, ValueError) as exc:
         raise ValueError("Enter a valid nonnegative price and whole-number stock.") from exc
-    return name, category, description or None, price_kobo, quantity
+    return name, category, description or None, price_minor, quantity
 
 
 def product_text(product, *, detail=False, seller_view=False):
-    amount = Decimal(product["price_kobo"]) / 100
+    amount = Decimal(product["price_minor"]) / MINOR_UNITS_PER_MAJOR
+    currency = product.get("currency") or DEFAULT_CURRENCY
     description = product["description"] or ""
     description = description[:400 if detail else 140]
     identifier = (f'Your product #{product["seller_number"]} '
@@ -160,8 +157,8 @@ def product_text(product, *, detail=False, seller_view=False):
                   else f'#{product["product_id"]}')
     return (
         f'{identifier} {product["name"]}\n'
-        f'{product["business_name"]} · {product["category"]}\n'
-        f'Price: USD {amount:.2f} · In stock: {product["stock_quantity"]}\n'
+        f'{product["business_name"]} · {category_label(product["category"])}\n'
+        f'Price: {currency} {amount:.2f} · In stock: {product["stock_quantity"]}\n'
         f'{description}'
     ).strip()
 
@@ -175,7 +172,7 @@ def stored_data_text(user, seller, product_count):
         f'Email: {user["email"]}',
         f'Phone: {user["phone"]} ({phone_source})',
         f'Role: {"seller" if user["role"] == "SELLER" else "buyer"}',
-        f'Preferred category: {user["preferred_category"] or "none"}',
+        f'Preferred category: {category_label(user["preferred_category"]) if user["preferred_category"] else "none"}',
     ]
     if seller:
         lines += [
@@ -725,14 +722,13 @@ class BotHandlers:
         if key not in CATEGORIES:
             return CHOOSE_PREF
         try:
-            await self.run(self.store.set_preference, update.effective_user.id,
-                           CATEGORIES[key])
+            await self.run(self.store.set_preference, update.effective_user.id, key)
         except Exception:
             await self.failure(update)
             return CHOOSE_PREF
         self.reset_flow(context)
         await query.message.reply_text(
-            f"Saved {CATEGORIES[key]}. Use /products to see available products."
+            f"Saved {category_label(key)}. Use /products to see available products."
         )
         return ConversationHandler.END
 
@@ -894,7 +890,7 @@ class BotHandlers:
             if key and key not in CATEGORIES and key != "all":
                 await update.effective_message.reply_text("Use /products all, clothing, hardware, food, or art.")
                 return
-            category = (CATEGORIES[key] if key != "all" else None) if key else (
+            category = (key if key != "all" else None) if key else (
                 user["preferred_category"] if user else None
             )
             products = await self.run(self.store.list_products, category, None)

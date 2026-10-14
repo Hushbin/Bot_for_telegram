@@ -16,6 +16,10 @@ from dotenv import load_dotenv
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))  # so catalog.py is importable when run as a script
+
+from catalog import LEGACY_CATEGORY_LABELS  # noqa: E402
+
 SCHEMA = "SME_SCHEMA"
 RUNTIME = "SME_BOT"
 TABLES = ("USERS", "SELLERS", "PRODUCTS")
@@ -82,7 +86,42 @@ COLUMN_MIGRATIONS = (
     ("SELLERS", "DELETED_AT", "TIMESTAMP WITH TIME ZONE"),
     ("PRODUCTS", "DELETED_AT", "TIMESTAMP WITH TIME ZONE"),
     ("PRODUCTS", "PHOTO_VERSION_ID", "VARCHAR2(128 CHAR)"),
+    ("PRODUCTS", "CURRENCY", "VARCHAR2(3 CHAR) DEFAULT 'USD' NOT NULL"),
 )
+
+# Columns renamed after the first release, as (table, old name, new name).
+COLUMN_RENAMES = (
+    ("PRODUCTS", "PRICE_KOBO", "PRICE_MINOR"),
+)
+
+# Columns that held a category label before category keys were introduced.
+CATEGORY_COLUMNS = (("PRODUCTS", "CATEGORY"), ("USERS", "PREFERRED_CATEGORY"))
+
+
+def rename_column_statements(existing: dict[str, set[str]]) -> list[str]:
+    """RENAME statements for columns still under their old name.
+
+    A table that is missing, or that already has the new name, is left alone, so a
+    second run does nothing. Oracle updates constraints that mention the column.
+    """
+    return [
+        f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}"
+        for table, old, new in COLUMN_RENAMES
+        if old in existing.get(table, ()) and new not in existing[table]
+    ]
+
+
+def category_update_statements() -> list[tuple[str, dict[str, str]]]:
+    """(SQL, binds) pairs that turn stored category labels into category keys.
+
+    Each statement only matches rows still holding a label, so it is safe to repeat.
+    """
+    return [
+        (f"UPDATE {table} SET {column} = :key WHERE {column} = :label",
+         {"key": key, "label": label})
+        for table, column in CATEGORY_COLUMNS
+        for label, key in LEGACY_CATEGORY_LABELS.items()
+    ]
 
 
 def missing_column_statements(existing: dict[str, set[str]]) -> list[str]:
@@ -138,9 +177,15 @@ def main() -> None:
             columns: dict[str, set[str]] = {}
             for table, column in cursor.fetchall():
                 columns.setdefault(table, set()).add(column)
-            for statement in missing_column_statements(columns):
+            for statement in rename_column_statements(columns) + missing_column_statements(columns):
                 print(f"Migrating: {statement}")
                 cursor.execute(statement)
+            for statement, binds in category_update_statements():
+                cursor.execute(statement, binds)
+                if cursor.rowcount:
+                    print(f"Converted {cursor.rowcount} row(s): {binds['label']} -> {binds['key']} "
+                          f"({statement.split()[1]})")
+            owner.commit()  # the DDL above commits itself; the category UPDATEs do not
             for table in TABLES:
                 cursor.execute(f"GRANT SELECT, INSERT, UPDATE ON {table} TO {RUNTIME}")
 

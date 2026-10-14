@@ -23,9 +23,9 @@ class LocalBackendTests(unittest.TestCase):
             media = LocalMediaStorage(root / "media")
             user = store.upsert_user(42, "Jane", "jane@example.com", "+1234567890")
             self.assertEqual(user["role"], "CUSTOMER")
-            store.set_preference(42, "Clothing/Fashion")
+            store.set_preference(42, "clothing")
             store.upsert_seller(42, "Shop", "shop@example.com", "Street", "+1234567890")
-            product_id = store.create_product(42, "Shirt", "Clothing/Fashion", None, 1999, 5)
+            product_id = store.create_product(42, "Shirt", "clothing", None, 1999, 5)
             key, version = media.put_product_photo(42, product_id, b"\xff\xd8\xfftest")
             store.set_product_photo(42, product_id, key)
             self.assertFalse(store.set_stock(99, product_id, 1))
@@ -35,7 +35,7 @@ class LocalBackendTests(unittest.TestCase):
             product = restarted.get_product(product_id)
             self.assertEqual(product["business_name"], "Shop")
             self.assertEqual(product["stock_quantity"], 4)
-            self.assertEqual(restarted.list_products("Clothing/Fashion")[0]["product_id"], product_id)
+            self.assertEqual(restarted.list_products("clothing")[0]["product_id"], product_id)
             self.assertEqual(media.get_photo(key), b"\xff\xd8\xfftest")
             media.delete_version(key, version)
             self.assertFalse((root / "media" / key).exists())
@@ -61,7 +61,7 @@ class LocalBackendTests(unittest.TestCase):
             store = SQLiteStore(Path(temp) / "bot.sqlite3")
             store.upsert_user(42, "Jane Doe", "jane@example.com", "+1234567890", True)
             store.upsert_seller(42, "Shop", "shop@example.com", "Main St", "+1987654321")
-            product_id = store.create_product(42, "Secret hat", "Art & Design", "Mine", 100, 3)
+            product_id = store.create_product(42, "Secret hat", "art", "Mine", 100, 3)
             store.set_product_photo(42, product_id, "products/42/1/a.jpg", "v1")
             store.erase_user(42)
             with store.connect() as connection:
@@ -84,11 +84,14 @@ class LocalBackendTests(unittest.TestCase):
                 business_email TEXT NOT NULL, address TEXT NOT NULL, business_phone TEXT NOT NULL);
             CREATE TABLE products (product_id INTEGER PRIMARY KEY,
                 seller_telegram_user_id INTEGER NOT NULL, name TEXT NOT NULL,
-                category TEXT NOT NULL, description TEXT, price_kobo INTEGER NOT NULL,
+                category TEXT NOT NULL, description TEXT,
+                price_kobo INTEGER NOT NULL CHECK (price_kobo >= 0),
                 stock_quantity INTEGER NOT NULL, photo_object_key TEXT);
-            INSERT INTO users VALUES (7, 'Old User', 'old@example.com', '+111', 'SELLER', NULL);
+            INSERT INTO users VALUES (7, 'Old User', 'old@example.com', '+111', 'SELLER',
+                                      'Clothing/Fashion');
             INSERT INTO sellers VALUES (7, 'Old Shop', 'o@example.com', 'Old St', '+222');
             INSERT INTO products VALUES (1, 7, 'Old product', 'Art & Design', NULL, 500, 2, NULL);
+            INSERT INTO products VALUES (2, 7, 'Odd product', 'Gadgets', NULL, 900, 1, NULL);
         """
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "old.sqlite3"
@@ -99,6 +102,32 @@ class LocalBackendTests(unittest.TestCase):
             SQLiteStore(path)  # opening again must be harmless
             user = store.get_user(7)
             self.assertEqual((user["full_name"], user["phone_verified"]), ("Old User", False))
-            self.assertEqual(store.get_product(1)["name"], "Old product")
+            self.assertEqual(user["preferred_category"], "clothing")
+            product = store.get_product(1)
+            self.assertEqual((product["name"], product["category"]), ("Old product", "art"))
+            self.assertEqual((product["price_minor"], product["currency"]), (500, "USD"))
+            # A value that is not one of the old labels is left exactly as it was.
+            self.assertEqual(store.get_product(2)["category"], "Gadgets")
+            with store.connect() as connection:
+                names = {row["name"] for row in connection.execute("PRAGMA table_info(products)")}
+            self.assertIn("price_minor", names)
+            self.assertNotIn("price_kobo", names)
+            # The renamed column keeps working for new writes and its CHECK constraint.
+            self.assertTrue(store.update_product(7, 1, "Renamed", "food", None, 650, 3))
+            self.assertEqual(store.get_product(1)["price_minor"], 650)
+            with self.assertRaises(sqlite3.IntegrityError):
+                store.update_product(7, 1, "Negative", "food", None, -1, 3)
             self.assertEqual(store.erase_user(7), [])
             self.assertIsNone(store.get_user(7))
+
+    def test_upgrade_does_not_touch_rows_that_already_use_keys(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "bot.sqlite3"
+            store = SQLiteStore(path)
+            store.upsert_user(1, "A", "a@example.com", "+1")
+            store.upsert_seller(1, "Shop", "s@example.com", "St", "+1")
+            store.set_preference(1, "food")
+            store.create_product(1, "Bread", "food", None, 250, 4)
+            SQLiteStore(path)
+            self.assertEqual(store.get_user(1)["preferred_category"], "food")
+            self.assertEqual(store.get_product(1)["category"], "food")

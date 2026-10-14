@@ -44,10 +44,38 @@ class SchemaTests(unittest.TestCase):
                "SELLERS": {"TELEGRAM_USER_ID", "BUSINESS_NAME"},
                "PRODUCTS": {"PRODUCT_ID", "DELETED_AT"}}
         statements = self.setup_db.missing_column_statements(old)
-        self.assertEqual(len(statements), 4)
+        self.assertEqual(len(statements), 5)
         self.assertTrue(all(s.startswith("ALTER TABLE ") for s in statements))
         self.assertIn("ALTER TABLE USERS ADD (PHONE_VERIFIED ", " ".join(statements))
+        self.assertIn("ALTER TABLE PRODUCTS ADD (CURRENCY VARCHAR2(3 CHAR) DEFAULT 'USD' NOT NULL)",
+                      statements)
         self.assertNotIn("PRODUCTS ADD (DELETED_AT", " ".join(statements))
+
+    def test_renamed_columns_exist_in_the_schema_file_under_the_new_name_only(self):
+        declared = schema_columns()
+        for table, old, new in self.setup_db.COLUMN_RENAMES:
+            self.assertIn(new, declared[table])
+            self.assertNotIn(old, declared[table])
+
+    def test_the_price_column_is_renamed_once_and_only_when_needed(self):
+        rename = self.setup_db.rename_column_statements
+        self.assertEqual(
+            rename({"PRODUCTS": {"PRODUCT_ID", "PRICE_KOBO"}}),
+            ["ALTER TABLE PRODUCTS RENAME COLUMN PRICE_KOBO TO PRICE_MINOR"])
+        self.assertEqual(rename({"PRODUCTS": {"PRODUCT_ID", "PRICE_MINOR"}}), [])
+        self.assertEqual(rename({"PRODUCTS": {"PRICE_KOBO", "PRICE_MINOR"}}), [])  # never clobber
+        self.assertEqual(rename({}), [])
+
+    def test_category_conversion_covers_every_legacy_label_in_both_tables(self):
+        from catalog import LEGACY_CATEGORY_LABELS
+        updates = self.setup_db.category_update_statements()
+        self.assertEqual({(binds["label"], binds["key"]) for _, binds in updates},
+                         set(LEGACY_CATEGORY_LABELS.items()))
+        self.assertEqual(
+            {sql for sql, _ in updates},
+            {"UPDATE PRODUCTS SET CATEGORY = :key WHERE CATEGORY = :label",
+             "UPDATE USERS SET PREFERRED_CATEGORY = :key WHERE PREFERRED_CATEGORY = :label"})
+        self.assertEqual(len(updates), 2 * len(LEGACY_CATEGORY_LABELS))
 
     def test_current_and_not_yet_created_tables_need_no_migration(self):
         current = {table: set(columns) for table, columns in schema_columns().items()}
@@ -74,6 +102,8 @@ class OracleStartupCheckTests(unittest.TestCase):
         asked = " ".join(call.args[0].upper() for call in cursor.execute.call_args_list)
         for table, column, _ in setup_db.COLUMN_MIGRATIONS:
             self.assertIn(column, asked, f"check() never selects {table}.{column}")
+        for table, _, renamed in setup_db.COLUMN_RENAMES:
+            self.assertIn(renamed, asked, f"check() never selects {table}.{renamed}")
 
     def test_an_outdated_schema_stops_startup_with_a_pointer_to_the_fix(self):
         from unittest.mock import MagicMock, patch

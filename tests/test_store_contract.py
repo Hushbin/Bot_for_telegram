@@ -23,8 +23,8 @@ from types import SimpleNamespace
 from fakes import FakeStore
 from local_backend import SQLiteStore
 
-CLOTHING = "Clothing/Fashion"
-ART = "Art & Design"
+CLOTHING = "clothing"  # stores hold category keys, never display labels
+ART = "art"
 _ids = random.SystemRandom()
 
 
@@ -79,6 +79,15 @@ class StoreContract:
         self.store.set_preference(self.uid, ART)
         self.assertEqual(self.store.get_user(self.uid)["preferred_category"], ART)
 
+    def test_category_filter_matches_the_stored_key_exactly(self):
+        self.register(seller=True)
+        shirt, painting = self.product(category=CLOTHING), self.product(category=ART)
+        self.assertEqual([p["product_id"] for p in self.store.list_products(category=ART)],
+                         [painting])
+        self.assertEqual([p["product_id"] for p in self.store.list_products(category=CLOTHING)],
+                         [shirt])
+        self.assertEqual(self.store.list_products(category="Art & Design"), [])
+
     # -- sellers -------------------------------------------------------------
 
     def test_seller_requires_a_registered_user(self):
@@ -107,8 +116,10 @@ class StoreContract:
         found = self.store.get_product(product_id)
         self.assertEqual(found["name"], "Shirt")
         self.assertEqual(found["business_name"], "Shop")
-        self.assertEqual(found["price_kobo"], 1999)
+        self.assertEqual((found["price_minor"], found["currency"]), (1999, "USD"))
         self.assertIsNone(found["photo_object_key"])
+        self.assertEqual((found["category"], self.store.list_products()[0]["currency"]),
+                         (CLOTHING, "USD"))
         self.assertIsNone(self.store.get_product(product_id + 10**6))
 
     def test_each_seller_has_stable_product_numbers(self):
@@ -157,7 +168,7 @@ class StoreContract:
         found = self.store.get_product(product_id)
         self.assertEqual((found["name"], found["category"], found["description"]),
                          ("Blue shirt", ART, None))
-        self.assertEqual((found["price_kobo"], found["stock_quantity"]), (2500, 7))
+        self.assertEqual((found["price_minor"], found["stock_quantity"]), (2500, 7))
         self.assertEqual(found["photo_object_key"], "products/a.jpg")
 
     def test_list_filters_orders_newest_first_and_caps_at_twenty(self):

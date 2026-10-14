@@ -193,7 +193,8 @@ class JourneyTests(WiringTestCase):
         self.assertIn("Choose a category", (await self.say(14, "/preferences"))[0])
         texts, _ = await self.tap(14, "cat:art")
         self.assertIn("Saved Art & Design", texts[0])
-        self.assertEqual(self.store.get_user(14)["preferred_category"], "Art & Design")
+        # The row holds the key; only the message to the user uses the label.
+        self.assertEqual(self.store.get_user(14)["preferred_category"], "art")
 
     async def test_repeat_start_does_not_duplicate_the_user(self):
         await self.register(12, "customer")
@@ -258,8 +259,8 @@ class JourneyTests(WiringTestCase):
     async def test_seller_first_product_is_number_one_even_when_catalog_id_is_three(self):
         self.seed_seller(16)
         self.seed_seller(17)
-        self.store.create_product(16, "A", "Clothing/Fashion", None, 100, 1)
-        self.store.create_product(16, "B", "Clothing/Fashion", None, 100, 1)
+        self.store.create_product(16, "A", "clothing", None, 100, 1)
+        self.store.create_product(16, "B", "clothing", None, 100, 1)
         await self.say(17, "/addproduct")
         saved = (await self.say(17, PRODUCT))[0]
         self.assertIn("Your product #1 saved (catalog ID #3)", saved)
@@ -485,13 +486,13 @@ class EditTests(WiringTestCase):
         self.assertEqual(replies, ["Your product #1 updated."])
         products = self.store.list_products(seller_id=84)
         self.assertEqual(len(products), 1)
-        self.assertEqual((products[0]["price_kobo"], products[0]["stock_quantity"]), (2450, 9))
+        self.assertEqual((products[0]["price_minor"], products[0]["stock_quantity"]), (2450, 9))
         # The product flow is still open, so the photo step keeps working.
         self.assertIn("Done.", (await self.say(84, "/skip"))[0])
         # A correction after the flow ended is still applied to the same product.
         await self.say(84, "Blue shirt | clothing | 30 | 9 | Cotton", edited=True,
                        message_id=original)
-        self.assertEqual(self.store.get_product(1)["price_kobo"], 3000)
+        self.assertEqual(self.store.get_product(1)["price_minor"], 3000)
 
     async def test_an_invalid_product_correction_changes_nothing_and_keeps_the_photo_step(self):
         self.seed_seller(85)
@@ -501,7 +502,7 @@ class EditTests(WiringTestCase):
         replies = await self.say(85, "Blue shirt | clothing | cheap | 5 | Cotton",
                                  edited=True, message_id=original)
         self.assertIn("Try again", replies[0])
-        self.assertEqual(self.store.get_product(1)["price_kobo"], 1999)
+        self.assertEqual(self.store.get_product(1)["price_minor"], 1999)
         self.assertIn("Done.", (await self.say(85, "/skip"))[0])
 
     async def test_editing_a_rejected_product_line_creates_it_once(self):
@@ -532,7 +533,7 @@ class EditTests(WiringTestCase):
         await self.say(88, "/addproduct")
         self.assertEqual(await self.say(88, "Blue shirt | clothing | 1 | 1 | x",
                                         edited=True, message_id=original), [])
-        self.assertEqual(self.store.get_product(1)["price_kobo"], 1999)
+        self.assertEqual(self.store.get_product(1)["price_minor"], 1999)
 
     async def test_cancel_ends_the_chance_to_correct(self):
         await self.begin(89)
@@ -551,6 +552,54 @@ class EditTests(WiringTestCase):
                                  message_id=phone_message)
         self.assertIn("Phone number saved", replies[0])
         self.assertEqual(self.store.get_user(90)["phone"], "+1888888888")
+
+
+class CategoryBrowsingTests(WiringTestCase):
+    """Categories are stored as keys and shown as labels (suggestion 4.2)."""
+
+    def seed_catalog(self):
+        self.seed_seller(100)
+        self.store.create_product(100, "Linen shirt", "clothing", None, 1999, 2)
+        self.store.create_product(100, "Oil painting", "art", None, 5000, 1)
+
+    async def browse(self, uid, *args):
+        texts = await self.say(uid, " ".join(("/products", *args)))
+        return "\n".join(texts)
+
+    async def test_browsing_by_category_filters_on_the_stored_key(self):
+        self.seed_catalog()
+        art = await self.browse(101, "art")
+        self.assertIn("Oil painting", art)
+        self.assertNotIn("Linen shirt", art)
+        everything = await self.browse(101, "all")
+        self.assertIn("Oil painting", everything)
+        self.assertIn("Linen shirt", everything)
+
+    async def test_listings_show_the_label_and_the_currency(self):
+        self.seed_catalog()
+        text = await self.browse(101, "art")
+        self.assertIn("Art & Design", text)
+        self.assertNotIn("· art", text)
+        self.assertIn("Price: USD 50.00", text)
+
+    async def test_a_buyers_chosen_category_is_the_default_filter(self):
+        self.seed_catalog()
+        await self.register(102)
+        await self.say(102, "/preferences")
+        await self.tap(102, "cat:clothing")
+        self.assertEqual(self.store.get_user(102)["preferred_category"], "clothing")
+        default = await self.browse(102)
+        self.assertIn("Linen shirt", default)
+        self.assertNotIn("Oil painting", default)
+        self.assertIn("Preferred category: Clothing/Fashion", (await self.say(102, "/mydata"))[0])
+
+    async def test_a_product_added_in_chat_is_stored_under_its_key(self):
+        self.seed_seller(103)
+        await self.say(103, "/addproduct")
+        await self.say(103, "Cap | hardware | 3.50 | 4 | Metal")
+        product = self.store.get_product(1)
+        self.assertEqual((product["category"], product["price_minor"]), ("hardware", 350))
+        self.assertIn("Hardware Accessories", await self.browse(104, "hardware"))
 
 
 class ConversationIsolationTests(WiringTestCase):

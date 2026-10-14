@@ -110,7 +110,7 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.users, {})
         self.store.upsert_user(42, "Jane", "jane@example.com", "+1234567890")
         self.store.upsert_seller(42, "Shop", "shop@example.com", "Street", "+1234567890")
-        self.store.create_product(42, "Shirt", "Clothing/Fashion", None, 100, 2)
+        self.store.create_product(42, "Shirt", "clothing", None, 100, 2)
         self.context.args = ["1", "7"]
         other = FakeMessage()
         await self.bot.stock(update(other, user_id=99), self.context)
@@ -146,7 +146,7 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
     async def test_failed_photo_db_update_removes_uploaded_version(self):
         self.store.upsert_user(42, "Jane", "jane@example.com", "+1234567890")
         self.store.upsert_seller(42, "Shop", "shop@example.com", "Street", "+1234567890")
-        self.store.create_product(42, "Shirt", "Clothing/Fashion", None, 100, 2)
+        self.store.create_product(42, "Shirt", "clothing", None, 100, 2)
         self.store.fail_photo_update = True
         self.context.user_data["pending_product_id"] = 1
         message = FakeMessage(photo=[FakePhoto()])
@@ -162,7 +162,7 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
         prompt = FakeMessage()
         self.assertEqual(await self.bot.add_product(update(prompt), self.context), PRODUCT_DETAILS)
         self.assertIn("price in USD", prompt.replies[0][1])
-        self.store.create_product(42, "Shirt", "Clothing/Fashion", None, 1999, 2)
+        self.store.create_product(42, "Shirt", "clothing", None, 1999, 2)
         self.context.args = ["1"]
         shown = FakeMessage()
         await self.bot.product(update(shown), self.context)

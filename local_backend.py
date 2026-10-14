@@ -5,6 +5,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
+from catalog import LEGACY_CATEGORY_LABELS
+
 
 ERASED = "[deleted]"
 
@@ -33,7 +35,8 @@ CREATE TABLE IF NOT EXISTS products (
     name TEXT NOT NULL,
     category TEXT NOT NULL,
     description TEXT,
-    price_kobo INTEGER NOT NULL CHECK (price_kobo >= 0),
+    price_minor INTEGER NOT NULL CHECK (price_minor >= 0),
+    currency TEXT NOT NULL DEFAULT 'USD',
     stock_quantity INTEGER NOT NULL CHECK (stock_quantity >= 0),
     photo_object_key TEXT,
     photo_version_id TEXT,
@@ -51,7 +54,16 @@ COLUMN_MIGRATIONS = (
     ("sellers", "deleted_at", "TEXT"),
     ("products", "deleted_at", "TEXT"),
     ("products", "photo_version_id", "TEXT"),
+    ("products", "currency", "TEXT NOT NULL DEFAULT 'USD'"),
 )
+
+# Columns renamed after the first release: (table, old name, new name).
+COLUMN_RENAMES = (
+    ("products", "price_kobo", "price_minor"),
+)
+
+# Columns that held a category label before keys were introduced.
+CATEGORY_COLUMNS = (("products", "category"), ("users", "preferred_category"))
 
 USER_COLUMNS = "telegram_user_id, full_name, email, phone, phone_verified, role, preferred_category"
 SELLER_COLUMNS = "telegram_user_id, business_name, business_email, address, business_phone"
@@ -61,7 +73,7 @@ PRODUCT_COLUMNS = """
      WHERE earlier.seller_telegram_user_id = p.seller_telegram_user_id
        AND earlier.product_id <= p.product_id) AS seller_number,
     p.name, p.category,
-    p.description, p.price_kobo, p.stock_quantity, p.photo_object_key,
+    p.description, p.price_minor, p.currency, p.stock_quantity, p.photo_object_key,
     s.business_name
 """
 
@@ -72,11 +84,27 @@ class SQLiteStore:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.connect() as connection:
             connection.executescript(SCHEMA)
-            for table, column, definition in COLUMN_MIGRATIONS:
-                existing = {row["name"] for row in
-                            connection.execute(f"PRAGMA table_info({table})")}
-                if column not in existing:
-                    connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+            self.migrate(connection)
+
+    @staticmethod
+    def migrate(connection):
+        """Bring a database file created by an earlier release up to date, in place.
+
+        Every step checks before acting, so running it on a current database is a no-op.
+        """
+        def columns(table):
+            return {row["name"] for row in connection.execute(f"PRAGMA table_info({table})")}
+
+        for table, old, new in COLUMN_RENAMES:
+            if old in columns(table) and new not in columns(table):
+                connection.execute(f"ALTER TABLE {table} RENAME COLUMN {old} TO {new}")
+        for table, column, definition in COLUMN_MIGRATIONS:
+            if column not in columns(table):
+                connection.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        for table, column in CATEGORY_COLUMNS:
+            for label, key in LEGACY_CATEGORY_LABELS.items():
+                connection.execute(f"UPDATE {table} SET {column} = ? WHERE {column} = ?",
+                                   (key, label))
 
     @contextmanager
     def connect(self):
@@ -161,14 +189,14 @@ class SQLiteStore:
             return dict(row) if row else None
 
     def create_product(self, seller_id, name, category, description,
-                       price_kobo, stock_quantity, with_number=False):
+                       price_minor, stock_quantity, with_number=False):
         with self.connect() as connection:
             cursor = connection.execute("""
                 INSERT INTO products (seller_telegram_user_id, name, category,
-                                      description, price_kobo, stock_quantity)
+                                      description, price_minor, stock_quantity)
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (seller_id, name, category, description,
-                  price_kobo, stock_quantity))
+                  price_minor, stock_quantity))
             product_id = cursor.lastrowid
             if not with_number:
                 return product_id
@@ -179,14 +207,14 @@ class SQLiteStore:
             return product_id, seller_number
 
     def update_product(self, seller_id, product_id, name, category, description,
-                       price_kobo, stock_quantity):
+                       price_minor, stock_quantity):
         with self.connect() as connection:
             cursor = connection.execute("""
                 UPDATE products SET name = ?, category = ?, description = ?,
-                       price_kobo = ?, stock_quantity = ?
+                       price_minor = ?, stock_quantity = ?
                 WHERE product_id = ? AND seller_telegram_user_id = ?
                   AND deleted_at IS NULL
-            """, (name, category, description, price_kobo, stock_quantity,
+            """, (name, category, description, price_minor, stock_quantity,
                   product_id, seller_id))
             return cursor.rowcount == 1
 

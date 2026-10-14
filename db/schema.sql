@@ -1,7 +1,9 @@
 -- Owned by SME_SCHEMA. The bot connects as SME_BOT and has DML only.
 -- deleted_at marks erased rows: personal columns are overwritten with '[deleted]'
 -- rather than the row being removed, so the runtime user needs no DELETE grant.
--- Keep scripts/setup_db.py COLUMN_MIGRATIONS in step with any column added here.
+-- Keep scripts/setup_db.py COLUMN_MIGRATIONS and COLUMN_RENAMES in step with any column
+-- added or renamed here. Prices are minor units (cents) in the row's currency; category
+-- columns hold the key from catalog.py (for example 'clothing'), never the label.
 CREATE TABLE users (
     telegram_user_id NUMBER(19) PRIMARY KEY,
     full_name VARCHAR2(160 CHAR) NOT NULL,
@@ -36,7 +38,8 @@ CREATE TABLE products (
     name VARCHAR2(160 CHAR) NOT NULL,
     category VARCHAR2(80 CHAR) NOT NULL,
     description VARCHAR2(1000 CHAR),
-    price_kobo NUMBER(12) NOT NULL CHECK (price_kobo >= 0),
+    price_minor NUMBER(12) NOT NULL CHECK (price_minor >= 0),
+    currency VARCHAR2(3 CHAR) DEFAULT 'USD' NOT NULL,
     stock_quantity NUMBER(10) NOT NULL CHECK (stock_quantity >= 0),
     photo_object_key VARCHAR2(512 CHAR),
     photo_version_id VARCHAR2(128 CHAR),

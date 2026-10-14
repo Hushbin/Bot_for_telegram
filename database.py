@@ -9,7 +9,7 @@ ERASED = "[deleted]"
 REQUIRED_COLUMNS = {
     "USERS": ("telegram_user_id", "phone_verified", "deleted_at"),
     "SELLERS": ("telegram_user_id", "deleted_at"),
-    "PRODUCTS": ("product_id", "deleted_at", "photo_version_id"),
+    "PRODUCTS": ("product_id", "deleted_at", "photo_version_id", "price_minor", "currency"),
 }
 
 
@@ -147,19 +147,19 @@ class OracleStore:
                 return row_dict(cursor, cursor.fetchone())
 
     def create_product(self, seller_id, name, category, description,
-                       price_kobo, stock_quantity, with_number=False):
+                       price_minor, stock_quantity, with_number=False):
         with self.connect() as connection:
             with connection.cursor() as cursor:
                 new_id = cursor.var(oracledb.DB_TYPE_NUMBER)
                 cursor.execute(f"""
                     INSERT INTO {self.schema}.PRODUCTS
                         (seller_telegram_user_id, name, category, description,
-                         price_kobo, stock_quantity)
+                         price_minor, stock_quantity)
                     VALUES (:seller_id, :name, :category, :description,
-                            :price_kobo, :stock_quantity)
+                            :price_minor, :stock_quantity)
                     RETURNING product_id INTO :new_id
                 """, seller_id=seller_id, name=name, category=category,
-                    description=description, price_kobo=price_kobo,
+                    description=description, price_minor=price_minor,
                     stock_quantity=stock_quantity, new_id=new_id)
                 product_id = int(new_id.getvalue()[0])
                 if with_number:
@@ -173,18 +173,18 @@ class OracleStore:
         return (product_id, seller_number) if with_number else product_id
 
     def update_product(self, seller_id, product_id, name, category, description,
-                       price_kobo, stock_quantity):
+                       price_minor, stock_quantity):
         with self.connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(f"""
                     UPDATE {self.schema}.PRODUCTS SET name = :name, category = :category,
-                           description = :description, price_kobo = :price_kobo,
+                           description = :description, price_minor = :price_minor,
                            stock_quantity = :stock_quantity, updated_at = SYSTIMESTAMP
                     WHERE product_id = :product_id
                       AND seller_telegram_user_id = :seller_id
                       AND deleted_at IS NULL
                 """, name=name, category=category, description=description,
-                    price_kobo=price_kobo, stock_quantity=stock_quantity,
+                    price_minor=price_minor, stock_quantity=stock_quantity,
                     product_id=product_id, seller_id=seller_id)
                 changed = cursor.rowcount == 1
             connection.commit()
@@ -228,7 +228,7 @@ class OracleStore:
                             WHERE earlier.seller_telegram_user_id = p.seller_telegram_user_id
                               AND earlier.product_id <= p.product_id) AS seller_number,
                            p.name,
-                           p.category, p.description, p.price_kobo,
+                           p.category, p.description, p.price_minor, p.currency,
                            p.stock_quantity, p.photo_object_key, s.business_name
                     FROM {self.schema}.PRODUCTS p JOIN {self.schema}.SELLERS s
                       ON p.seller_telegram_user_id = s.telegram_user_id
@@ -253,7 +253,7 @@ class OracleStore:
                             WHERE earlier.seller_telegram_user_id = p.seller_telegram_user_id
                               AND earlier.product_id <= p.product_id) AS seller_number,
                            p.name,
-                           p.category, p.description, p.price_kobo,
+                           p.category, p.description, p.price_minor, p.currency,
                            p.stock_quantity, p.photo_object_key, s.business_name
                     FROM {self.schema}.PRODUCTS p JOIN {self.schema}.SELLERS s
                       ON p.seller_telegram_user_id = s.telegram_user_id
@@ -271,7 +271,7 @@ class OracleStore:
                 cursor.execute(f"""
                     SELECT p.product_id, p.seller_telegram_user_id,
                            :seller_number AS seller_number, p.name, p.category,
-                           p.description, p.price_kobo, p.stock_quantity,
+                           p.description, p.price_minor, p.currency, p.stock_quantity,
                            p.photo_object_key, s.business_name
                     FROM {self.schema}.PRODUCTS p JOIN {self.schema}.SELLERS s
                       ON p.seller_telegram_user_id = s.telegram_user_id

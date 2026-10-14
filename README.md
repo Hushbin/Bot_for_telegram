@@ -8,15 +8,17 @@ Telegram bot backed by the existing OCI development Autonomous JSON Database and
 | --- | --- | --- |
 | `SME_SCHEMA.USERS` | One profile per Telegram user | Telegram user ID, name, email, phone and whether Telegram verified it, role, preferred category, erasure time |
 | `SME_SCHEMA.SELLERS` | Listing profile for a registered seller | Listing name, seller contact email and phone, location, erasure time |
-| `SME_SCHEMA.PRODUCTS` | Seller catalog and stock | Global catalog ID, category, USD price in cents, quantity, optional private photo object key and its version ID, erasure time |
+| `SME_SCHEMA.PRODUCTS` | Seller catalog and stock | Global catalog ID, category key, price in minor units (cents) and currency, quantity, optional private photo object key and its version ID, erasure time |
 
 The bot does not have orders, payments, reservations, or seller approval, so it does not create tables for those features. Product photos stay in Object Storage; the database stores only their private object keys. Customer preference is one column because the current UI chooses one category. A Telegram user ID, rather than a chat ID or a temporary Fauna record ID, identifies a profile across restarts.
 
 The database's `product_id` identifies a product globally for buyers. Sellers also see a stable number within their own catalog, starting at `#1`; previous listings, including erased ones, keep their place so numbers are never reassigned. This number is derived from existing product rows, so it needs no schema migration.
 
-For compatibility with existing databases, the price column is still named `price_kobo`; it now stores USD cents. Reprice any products entered in NGN before displaying them with the USD version of the bot. No exchange conversion is performed.
+**Prices.** `products.price_minor` holds the price in minor units (cents) and `products.currency` its ISO code, `USD` by default. The column was called `price_kobo` before this release; `scripts/setup_db.py` renames it. Amounts are shown as `price_minor / 100`, so only currencies with two decimal places are supported; add a per-currency exponent (`catalog.py`) before offering one that has none. No exchange conversion is performed, and amounts entered in another currency before the USD release were never converted.
 
-`scripts/setup_db.py` creates the `SME_SCHEMA` owner and `SME_BOT` runtime user. The owner has a 20 MB quota and DDL privileges for these tables; the runtime user has only `CREATE SESSION` plus `SELECT`, `INSERT`, and `UPDATE` on the three tables. It has no schema creation, deletion, or ADMIN privileges. The script is rerunnable and skips existing tables and indexes. It also adds any column listed in `COLUMN_MIGRATIONS` that an existing table lacks (the privacy and erasure columns of this release), and nothing else: it does **not** rotate existing user passwords, and it cannot drop, rename or retype columns. The bot checks for those columns at startup and refuses to start with a pointer to this script if they are missing, so **run `scripts/setup_db.py` against the database before deploying a release that adds columns**; otherwise the deploy rolls itself back.
+**Categories.** `products.category` and `users.preferred_category` hold the category *key* (`clothing`, `hardware`, `food`, `art`), never its display label. The keys and labels live in `catalog.py`; rewording a label there changes what users see without touching stored rows. Earlier releases stored the labels (`Clothing/Fashion`, ...), and `scripts/setup_db.py` converts those rows to keys. A category value that matches no old label is left as it is and is displayed unchanged.
+
+`scripts/setup_db.py` creates the `SME_SCHEMA` owner and `SME_BOT` runtime user. The owner has a 20 MB quota and DDL privileges for these tables; the runtime user has only `CREATE SESSION` plus `SELECT`, `INSERT`, and `UPDATE` on the three tables. It has no schema creation, deletion, or ADMIN privileges. The script is rerunnable and skips existing tables and indexes. It also brings an existing database up to date: it adds any column listed in `COLUMN_MIGRATIONS` that a table lacks, renames the columns listed in `COLUMN_RENAMES` (`price_kobo` to `price_minor`), and converts old category labels to keys. Every step checks first, so rerunning it changes nothing. It does **not** rotate existing user passwords, drop columns, or retype columns, and there is no automatic way back: to undo the rename, run `ALTER TABLE products RENAME COLUMN price_minor TO price_kobo` as the schema owner (the category keys would then show as plain text in the old release). The bot checks for the columns it needs at startup and refuses to start with a pointer to this script if they are missing, so **run `scripts/setup_db.py` against the database before deploying a release that adds columns**; otherwise the deploy rolls itself back.
 
 ## Personal data
 
@@ -133,6 +135,12 @@ Run the tests with `.venv/bin/python -m unittest discover -s tests -v`. They nee
 ## Deploy to the OCI bot VM
 
 **Before merging a release that adds database columns, run `scripts/setup_db.py` against the database** (see above). The bot refuses to start on an outdated schema, so a deploy made first would roll back, but nothing is damaged either way.
+
+**The `price_kobo` to `price_minor` release is not backward compatible.** After `setup_db.py` renames the column, the previously deployed release can no longer read products, and the new release cannot start before the rename. To avoid a broken bot in between, stop the service first, then migrate, then deploy:
+
+1. `sudo systemctl stop smebot` on the VM (optional for a development bot nobody is using; otherwise product commands fail from step 2 until step 3 finishes).
+2. Run `scripts/setup_db.py`.
+3. Merge to `master` so the workflow deploys the new release, which starts the service.
 
 The [deploy workflow](.github/workflows/deploy.yml) tests pull requests, then deploys each successful push to `master` (or a manual run on `master`). It builds wheels on Ubuntu 22.04/Python 3.10, opens a fresh OCI Bastion restricted to that runner's IP, copies a commit archive through an SSH tunnel, and activates a systemd release. CI never uploads `.env` or the database wallet. A failed service restart restores the previous release. Bastion and its session are deleted after each job.
 

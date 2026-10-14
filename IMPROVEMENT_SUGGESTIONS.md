@@ -50,8 +50,12 @@ Updated 13 October 2026. **Done** (uncommitted in the working tree):
 | 2.3 | `tests/test_store_contract.py` runs one contract (13 tests) against the in-memory fake and SQLite, and against Oracle only when `ORACLE_TEST_*` points at a throwaway database. The shared `FakeStore` moved to `tests/fakes.py`; the unused `set_role` was removed. |
 | 2.4 | `requirements.in` holds the ranges; `requirements.txt` is a universal hashed lock (34 packages). Verified by installing with hash checking on Python 3.10 and 3.15 and running the suite, and by confirming that every pin has a Linux cp310 wheel with a matching hash, which the VM's `--no-index` install needs. |
 | parsers | The name may contain commas, and the business address may contain commas. |
+| 4.1 | `price_kobo` is now `price_minor`, and products have a `currency` column (default `USD`) that the price display reads. Done in the stores, `schema.sql`, `setup_db.py` (an idempotent `RENAME COLUMN`) and the SQLite in-place upgrade. The bot refuses to start if the Oracle columns are missing. |
+| 4.2 | Category columns hold the key (`clothing`), never the label. The keys, labels and a frozen map of the old labels live in the new `catalog.py`; labels are applied only when displaying. `setup_db.py` and the SQLite upgrade convert old rows, leaving unknown values alone. |
 
-**Not done yet:** 4.1, 4.2, 5.x, 6.1, 6.2, 6.3, 6.5, and the remaining housekeeping items. 4.x needs your decision on schema renames; 6.1 needs the `python-telegram-bot[job-queue]` extra.
+**Not done yet:** 5.x, 6.1, 6.2, 6.3, 6.5, and the remaining housekeeping items. 6.1 needs the `python-telegram-bot[job-queue]` extra.
+
+**Rollout caveat for 4.1:** the column rename is not backward compatible with the previously deployed release, so migrate and deploy in the order given in the README's deploy section. The Oracle migration (`ALTER TABLE ... RENAME COLUMN` and the category `UPDATE`s) has not been run against a real Oracle database; the SQLite equivalent was run on a copy of your local database.
 
 **Not verified here:** nothing was run against the real Oracle database, Object Storage, or Telegram. The Oracle SQL (`MERGE`, the erase transaction, `setup_db.py`'s `ALTER TABLE`) and OCI photo deletion are covered only by the SQLite and fake equivalents plus mocks. The Oracle contract tests exist but are untested. Run `scripts/setup_db.py` and the Oracle contract tests against a non-production database before the first deploy. Also check that the bot's IAM policy allows `OBJECT_DELETE` on the bucket; the README says it does, but that policy lives in the infrastructure repository.
 

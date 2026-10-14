@@ -53,16 +53,16 @@ class FakeStore:
             return None
         return {key: seller[key] for key in SELLER_KEYS}
 
-    def create_product(self, user_id, name, category, description, price_kobo, stock,
+    def create_product(self, user_id, name, category, description, price_minor, stock,
                        with_number=False):
         if user_id not in self.sellers:
             raise LookupError("Unknown seller")
         product_id = len(self.products) + 1
         self.products[product_id] = dict(
             product_id=product_id, seller_telegram_user_id=user_id, name=name,
-            category=category, description=description, price_kobo=price_kobo,
-            stock_quantity=stock, photo_object_key=None, photo_version_id=None,
-            deleted=False)
+            category=category, description=description, price_minor=price_minor,
+            currency="USD", stock_quantity=stock, photo_object_key=None,
+            photo_version_id=None, deleted=False)
         seller_number = sum(1 for product in self.products.values()
                             if product["seller_telegram_user_id"] == user_id
                             and product["product_id"] <= product_id)
@@ -79,7 +79,7 @@ class FakeStore:
     def _view(self, product):
         view = {key: product[key] for key in (
             "product_id", "seller_telegram_user_id", "name", "category", "description",
-            "price_kobo", "stock_quantity", "photo_object_key")}
+            "price_minor", "currency", "stock_quantity", "photo_object_key")}
         view["business_name"] = self.sellers[product["seller_telegram_user_id"]]["business_name"]
         view["seller_number"] = sum(
             1 for earlier in self.products.values()
@@ -104,12 +104,12 @@ class FakeStore:
         return self._view(product) if not product["deleted"] else None
 
     def update_product(self, user_id, product_id, name, category, description,
-                       price_kobo, stock):
+                       price_minor, stock):
         product = self._live(product_id, user_id)
         if product is None:
             return False
         product.update(name=name, category=category, description=description,
-                       price_kobo=price_kobo, stock_quantity=stock)
+                       price_minor=price_minor, stock_quantity=stock)
         return True
 
     def set_product_photo(self, user_id, product_id, key, version_id=None):
