@@ -7,10 +7,12 @@ Telegram bot backed by the existing OCI development Autonomous JSON Database and
 | Table | Purpose | Key data |
 | --- | --- | --- |
 | `SME_SCHEMA.USERS` | One profile per Telegram user | Telegram user ID, name, email, phone and whether Telegram verified it, role, preferred category, erasure time |
-| `SME_SCHEMA.SELLERS` | Business profile for a registered user | Business name, email, address, phone, erasure time |
-| `SME_SCHEMA.PRODUCTS` | Seller catalog and stock | Category, USD price in cents, quantity, optional private photo object key and its version ID, erasure time |
+| `SME_SCHEMA.SELLERS` | Listing profile for a registered seller | Listing name, seller contact email and phone, location, erasure time |
+| `SME_SCHEMA.PRODUCTS` | Seller catalog and stock | Global catalog ID, category, USD price in cents, quantity, optional private photo object key and its version ID, erasure time |
 
 The bot does not have orders, payments, reservations, or seller approval, so it does not create tables for those features. Product photos stay in Object Storage; the database stores only their private object keys. Customer preference is one column because the current UI chooses one category. A Telegram user ID, rather than a chat ID or a temporary Fauna record ID, identifies a profile across restarts.
+
+The database's `product_id` identifies a product globally for buyers. Sellers also see a stable number within their own catalog, starting at `#1`; previous listings, including erased ones, keep their place so numbers are never reassigned. This number is derived from existing product rows, so it needs no schema migration.
 
 For compatibility with existing databases, the price column is still named `price_kobo`; it now stores USD cents. Reprice any products entered in NGN before displaying them with the USD version of the bot. No exchange conversion is performed.
 
@@ -18,16 +20,18 @@ For compatibility with existing databases, the price column is still named `pric
 
 ## Personal data
 
-What the bot stores, who sees it, and for how long. The same text is shown to users at `/start` and by `/privacy`; keep the two in step (`PRIVACY_NOTICE` in `handlers.py`).
+What the bot stores, who sees it, and for how long. New users see the privacy notice after choosing Seller or Buyer; `/privacy` shows it again (`PRIVACY_NOTICE` in `handlers.py`).
 
 | Data | Stored when | Visible to other users |
 | --- | --- | --- |
-| Telegram ID, name, email, phone (and whether Telegram verified it), role, preferred category | Registration (`/start`, `/profile`, `/preferences`) | No |
-| Business name | Seller profile | Yes, shown with each product |
-| Business email, address, phone | Seller profile | No |
+| Telegram ID, account contact name, email, phone (and whether Telegram verified it), role | Registration (`/start`, `/profile`) | No |
+| Preferred category | Only when a user chooses one with `/preferences` | No |
+| Seller listing name | Seller profile | Yes, shown with each product; may be a shop name, nickname or personal name |
+| Seller contact email and phone, location | Seller profile | No |
 | Product name, category, description, price, stock, photo | `/addproduct`, `/photo` | Yes |
 
-- **Phone number.** Users either share the number Telegram has verified (a contact-share button; the bot accepts only the user's own contact) or type any number, which is stored as unverified.
+- **Phone number.** Users either share the number Telegram has verified (a persistent contact-share keyboard; the bot accepts only the user's own contact) or type any number, which is stored as unverified. If the typing keyboard covers the button, tap the keyboard icon beside the message field.
+- **Seller listing.** A registered business is not required. Enter a listing name and a city/area, or `Online`, as `name | location`. The account email and phone are copied into seller contact fields unless the seller adds `| email | phone`. The listing name and products are public; the location and contact details are visible only to the operator. Sellers who use their personal name as the listing name make that name public. Existing `name, email, address, phone` input is still accepted.
 - **Retention.** Data is kept until the user erases it with `/deleteme`; there is no automatic expiry. Users can see what is stored with `/mydata`.
 - **Erasure.** `/deleteme` asks for confirmation, then overwrites the user's name, email and phone, their seller profile and their products with `[deleted]`, hides the products, and deletes the photo objects. Rows are overwritten rather than deleted so the runtime database account needs no `DELETE` privilege. The numeric Telegram ID and the erasure time remain. A user who registers again starts from an empty profile.
 - **Photos.** Deleting a photo needs its version ID because the bucket is versioned; the ID is stored with the product. A photo stored without one (none are created by this version) only gets a delete marker and needs manual cleanup. If a photo cannot be deleted, the data is still erased, the user is told, and the object key is logged at ERROR.
@@ -88,25 +92,29 @@ The wallet downloader stores only `tnsnames.ora` and `ewallet.pem` with private 
 ## Bot commands
 
 All commands run in a private Telegram chat.
+Telegram's command menu lists every command. `/menu` opens a button menu for the main actions, including guided prompts for product IDs and stock changes.
 
 | Command | Action |
 | --- | --- |
-| `/start` | Register once (privacy notice, name and email, then phone) or see the menu on return |
+| `/menu` | Open the action buttons at any time |
+| `/start` | Choose Seller or Buyer, read the privacy notice, then enter account contact details; sellers also choose a listing name and location |
 | `/profile` | Update name, email and phone |
 | `/privacy` | Show what is stored, who sees it and for how long |
 | `/mydata` | Show the data stored about you |
 | `/deleteme` | Erase your data, seller profile, products and photos (asks to confirm) |
-| `/sellerprofile` | Create or update a business profile |
+| `/sellerprofile` | Create or update a seller listing profile |
 | `/preferences` | Choose a catalog category |
 | `/addproduct` | Add name, category, USD price, stock, description, then one optional photo |
-| `/photo <ID>` | Attach a photo to one of your products that has none |
+| `/photo [number]` | Attach a photo using your seller product number; prefix a global catalog ID with `G` |
 | `/products [all\|clothing\|hardware\|food\|art]` | Browse the latest 20 products |
-| `/product <ID>` | View details and the private bucket photo if present |
+| `/product [catalog ID]` | View details and the private bucket photo if present; accepts `1` or `#1` and asks for an ID when omitted |
 | `/myproducts` | List your latest 20 products |
-| `/stock <ID> <quantity>` | Set stock on one of your products |
+| `/stock [number quantity]` | Set stock using your seller product number; prefix a global catalog ID with `G` |
 | `/cancel`, `/skip` | Stop the current conversation, or finish a product without a photo |
 
-Registration takes the name and email as `Jane Doe, jane@example.com` (the name may contain commas; the email is what follows the last one). Business details are `name, email, address, phone`; the address may contain commas. The product input format is `name | category | price | stock | description`. A photo must be at most 5 MB. The bot uploads it to a unique private object key and stores the key on the product row. If the database update fails after upload, the bot deletes that exact object version. Photos are never given public Object Storage URLs; `/product` reads the object through the bot's OCI identity and sends it to Telegram.
+Registration takes the name and email as `Jane Doe, jane@example.com` (the name may contain commas; the email is what follows the last one). The seller listing format is `name | city/area`, with optional `| email | phone` for separate seller contact details. The earlier `name, email, address, phone` format still works. The product input format is `name | category | price | stock | description`. A photo must be at most 5 MB. The bot uploads it to a unique private object key and stores the key on the product row. If the database update fails after upload, the bot deletes that exact object version. Photos are never given public Object Storage URLs; `/product` reads the object through the bot's OCI identity and sends it to Telegram.
+
+For example, if your first listing has catalog ID `#3`, you see `Your product #1 (catalog ID #3)`. Use `/stock 1 5` or `/photo 1` for your own listing; buyers use `/product 3` or `/product #3`. When the bot asks for a catalog ID, replying `3` or `#3` works. `/stock G3 5` and `/photo G3` also accept the global catalog ID explicitly.
 
 The bot uses polling on both local and VM deployments. It needs a real Telegram token to run; no token is present in this checkout. The bucket is versioned: future photo bytes and retained versions count against the [Always Free Object Storage allowance](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm).
 

@@ -2,7 +2,7 @@
 
 import logging
 
-from telegram import Update
+from telegram import BotCommand, MenuButtonCommands, Update
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -15,7 +15,8 @@ from telegram.ext import (
 from config import load_settings
 from handlers import (
     BotHandlers, CHOOSING, CLASS_STATE, SME_DETAILS, CHOOSE_PREF,
-    PRODUCT_DETAILS, PRODUCT_PHOTO, PHONE, CONFIRM_ERASE, on_error,
+    PRODUCT_DETAILS, PRODUCT_PHOTO, PHONE, CONFIRM_ERASE, PRODUCT_ID, PHOTO_ID,
+    STOCK_INPUT, BROWSE_CATEGORY, on_error,
 )
 
 
@@ -32,9 +33,36 @@ PRIVATE_EDITED_TEXT = (filters.UpdateType.EDITED_MESSAGE & filters.ChatType.PRIV
                        & filters.TEXT & ~filters.COMMAND)
 
 BOT_COMMANDS = (
-    "start", "profile", "sellerprofile", "preferences", "addproduct", "photo",
-    "products", "product", "myproducts", "stock", "privacy", "mydata", "deleteme",
+    "menu", "start", "profile", "sellerprofile", "preferences", "addproduct",
+    "photo", "products", "product", "myproducts", "stock", "privacy",
+    "mydata", "deleteme", "cancel", "skip",
 )
+
+COMMAND_DESCRIPTIONS = (
+    ("menu", "Open the button menu"),
+    ("start", "Register or see your welcome screen"),
+    ("products", "Browse products"),
+    ("product", "View a product by ID"),
+    ("profile", "Update your name, email and phone"),
+    ("preferences", "Choose a preferred category"),
+    ("sellerprofile", "Create or edit your seller profile"),
+    ("addproduct", "List a product"),
+    ("photo", "Add a photo to a product"),
+    ("myproducts", "See your listings"),
+    ("stock", "Change product stock"),
+    ("privacy", "Read the privacy notice"),
+    ("mydata", "See your stored data"),
+    ("deleteme", "Erase your data"),
+    ("cancel", "Stop the current step"),
+    ("skip", "Skip a product photo"),
+)
+
+
+async def register_command_menu(application):
+    await application.bot.set_my_commands(
+        [BotCommand(command, description) for command, description in COMMAND_DESCRIPTIONS]
+    )
+    await application.bot.set_chat_menu_button(menu_button=MenuButtonCommands())
 
 
 def configure_logging():
@@ -71,18 +99,23 @@ def build_application(settings=None, store=None, media=None):
             media = media or MediaStorage(settings)
     store.check()
     handlers = BotHandlers(store, media)
-    application = ApplicationBuilder().token(settings.bot_token).concurrent_updates(False).build()
+    application = (ApplicationBuilder().token(settings.bot_token)
+                   .concurrent_updates(False).post_init(register_command_menu).build())
 
     # One conversation for every multi-step flow. A user can only be in one state at a
     # time, any entry command replaces the current state, and one /cancel clears it.
     conversation = ConversationHandler(
         entry_points=[
+            CommandHandler("menu", handlers.menu, filters=PRIVATE_COMMAND),
+            CallbackQueryHandler(handlers.menu_action, pattern=r"^menu:"),
             CommandHandler("start", handlers.start, filters=PRIVATE_COMMAND),
             CommandHandler("profile", handlers.profile, filters=PRIVATE_COMMAND),
             CommandHandler("sellerprofile", handlers.seller_profile, filters=PRIVATE_COMMAND),
             CommandHandler("preferences", handlers.preferences, filters=PRIVATE_COMMAND),
             CommandHandler("addproduct", handlers.add_product, filters=PRIVATE_COMMAND),
             CommandHandler("photo", handlers.add_photo, filters=PRIVATE_COMMAND),
+            CommandHandler("product", handlers.view_product, filters=PRIVATE_COMMAND),
+            CommandHandler("stock", handlers.change_stock, filters=PRIVATE_COMMAND),
             CommandHandler("deleteme", handlers.delete_me, filters=PRIVATE_COMMAND),
         ],
         states={
@@ -102,12 +135,12 @@ def build_application(settings=None, store=None, media=None):
             ],
             CLASS_STATE: [
                 CallbackQueryHandler(handlers.classer, pattern=r"^role:"),
-                *with_hint(handlers, "Please tap Seller or Customer in the message above."),
+                *with_hint(handlers, "Please tap Seller or Buyer in the message above."),
             ],
             SME_DETAILS: [
                 MessageHandler(PRIVATE_TEXT, handlers.seller_details),
-                *with_hint(handlers, "Please send business name, email, address and phone "
-                                     "separated by commas."),
+                *with_hint(handlers, "Send listing name | city/area (or Online). "
+                                     "You can add | email | phone for different seller contact details."),
             ],
             CHOOSE_PREF: [
                 CallbackQueryHandler(handlers.preference, pattern=r"^cat:"),
@@ -122,6 +155,23 @@ def build_application(settings=None, store=None, media=None):
                 CommandHandler("skip", handlers.skip, filters=PRIVATE_COMMAND),
                 *with_hint(handlers, "Please send a photo (not a file), or /skip."),
             ],
+            PRODUCT_ID: [
+                MessageHandler(PRIVATE_TEXT, handlers.product_id),
+                *with_hint(handlers, "Please send a catalog ID from /products or /myproducts, "
+                                     "for example 1 or #1."),
+            ],
+            PHOTO_ID: [
+                MessageHandler(PRIVATE_TEXT, handlers.photo_id),
+                *with_hint(handlers, "Please send your product number."),
+            ],
+            STOCK_INPUT: [
+                MessageHandler(PRIVATE_TEXT, handlers.stock_input),
+                *with_hint(handlers, "Please send your product number and quantity."),
+            ],
+            BROWSE_CATEGORY: [
+                CallbackQueryHandler(handlers.browse_selection, pattern=r"^browse:"),
+                *with_hint(handlers, "Please choose a product category above."),
+            ],
         },
         fallbacks=[CommandHandler("cancel", handlers.cancel, filters=PRIVATE_COMMAND)],
         allow_reentry=True,
@@ -129,15 +179,15 @@ def build_application(settings=None, store=None, media=None):
     application.add_handler(conversation)
     for name, callback in (
         ("products", handlers.products),
-        ("product", handlers.product),
         ("myproducts", handlers.my_products),
-        ("stock", handlers.stock),
         ("privacy", handlers.privacy),
         ("mydata", handlers.my_data),
     ):
         application.add_handler(CommandHandler(name, callback, filters=PRIVATE_COMMAND))
     # Corrections to a message whose flow has already finished, e.g. the business details.
     application.add_handler(MessageHandler(PRIVATE_EDITED_TEXT, handlers.edited))
+    application.add_handler(CommandHandler("cancel", handlers.cancel, filters=PRIVATE_COMMAND))
+    application.add_handler(CommandHandler("skip", handlers.skip, filters=PRIVATE_COMMAND))
     # Commands sent in a group are answered once, with a pointer to the private chat.
     application.add_handler(CommandHandler(
         BOT_COMMANDS, handlers.not_private,

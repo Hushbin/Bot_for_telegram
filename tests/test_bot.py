@@ -66,16 +66,18 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_seller_product_photo_and_repeat_start(self):
         first = FakeMessage()
-        self.assertEqual(await self.bot.start(update(first), self.context), CHOOSING)
-        self.assertIn("What I store", first.replies[0][1])
+        self.assertEqual(await self.bot.start(update(first), self.context), CLASS_STATE)
+        self.assertIn("seller or a buyer", first.replies[0][1])
+        choose = FakeQuery("role:seller", FakeMessage())
+        self.assertEqual(await self.bot.classer(update(query=choose), self.context), CHOOSING)
+        self.assertIn("What I store", choose.message.replies[0][1])
+        self.assertTrue(choose.answered)
         details = FakeMessage("Jane Doe, jane@example.com")
         self.assertEqual(await self.bot.choose(update(details), self.context), PHONE)
         phone = FakeMessage("+1234567890")
-        self.assertEqual(await self.bot.phone_text(update(phone), self.context), CLASS_STATE)
+        self.assertEqual(await self.bot.phone_text(update(phone), self.context), SME_DETAILS)
         self.assertIs(self.store.users[42]["phone_verified"], False)
-        choose = FakeQuery("role:seller", FakeMessage())
-        self.assertEqual(await self.bot.classer(update(query=choose), self.context), SME_DETAILS)
-        self.assertTrue(choose.answered)
+        self.assertEqual(self.store.users[42]["role"], "SELLER")
         business = FakeMessage("Shop, shop@example.com, Main Street, +1234567890")
         self.assertEqual(await self.bot.seller_details(update(business), self.context),
                          ConversationHandler.END)
@@ -128,6 +130,7 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/start", message.replies[0][1])
 
     async def test_telegram_contact_is_verified_only_when_it_is_the_users_own(self):
+        self.context.user_data["signup_role"] = "CUSTOMER"
         await self.bot.choose(update(FakeMessage("Jane Doe, jane@example.com")), self.context)
         foreign = FakeMessage()
         foreign.contact = SimpleNamespace(user_id=7, phone_number="15550001")
@@ -135,7 +138,8 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.users, {})
         own = FakeMessage()
         own.contact = SimpleNamespace(user_id=42, phone_number="15550001")
-        self.assertEqual(await self.bot.phone_contact(update(own), self.context), CLASS_STATE)
+        self.assertEqual(await self.bot.phone_contact(update(own), self.context),
+                         ConversationHandler.END)
         self.assertEqual(self.store.users[42]["phone"], "+15550001")
         self.assertIs(self.store.users[42]["phone_verified"], True)
 
@@ -188,13 +192,26 @@ class ParserTests(unittest.TestCase):
             parse_business("Shop, shop@example.com, 1 Main St, Springfield, +1234567890"),
             ("Shop", "shop@example.com", "1 Main St, Springfield", "+1234567890"))
 
+    def test_private_seller_reuses_account_contact(self):
+        self.assertEqual(
+            parse_business("Jane's finds | Online", "jane@example.com", "+1234567890"),
+            ("Jane's finds", "jane@example.com", "Online", "+1234567890"))
+
+    def test_seller_can_use_separate_contact(self):
+        self.assertEqual(
+            parse_business("Market stall | Belgrade | shop@example.com | +19876543210",
+                           "jane@example.com", "+1234567890"),
+            ("Market stall", "shop@example.com", "Belgrade", "+19876543210"))
+
     def test_business_errors(self):
         for text in ("Shop, shop@example.com, +1234567890",
                      "Shop, bad, Street, +1234567890",
                      "Shop, shop@example.com, Street, abc",
-                     "Shop, shop@example.com, " + "x" * 401 + ", +1234567890"):
+                     "Shop, shop@example.com, " + "x" * 401 + ", +1234567890",
+                     "Name | ", "Name | Belgrade | bad | +1234567890",
+                     "Name | Belgrade | shop@example.com | bad"):
             with self.subTest(text=text), self.assertRaises(ValueError):
-                parse_business(text)
+                parse_business(text, "jane@example.com", "+1234567890")
 
     def test_telegram_numbers_get_a_plus_prefix(self):
         self.assertEqual(parse_telegram_phone("15550001234"), "+15550001234")

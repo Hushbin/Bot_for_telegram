@@ -15,7 +15,7 @@ from telegram.ext import ConversationHandler
 
 LOG = logging.getLogger(__name__)
 (CHOOSING, CLASS_STATE, SME_DETAILS, CHOOSE_PREF, PRODUCT_DETAILS, PRODUCT_PHOTO,
- PHONE, CONFIRM_ERASE) = range(8)
+ PHONE, CONFIRM_ERASE, PRODUCT_ID, PHOTO_ID, STOCK_INPUT, BROWSE_CATEGORY) = range(12)
 CATEGORIES = {
     "clothing": "Clothing/Fashion",
     "hardware": "Hardware Accessories",
@@ -26,27 +26,38 @@ MAX_PHOTO_BYTES = 5 * 1024 * 1024
 
 PRIVACY_NOTICE = (
     "What I store about you:\n"
-    "- your Telegram ID, name, email and phone number (and whether Telegram "
-    "verified the number), your role and your preferred category;\n"
-    "- sellers also give a business name, email, address and phone number, and "
-    "list products with photos.\n\n"
+    "- buyers: your Telegram ID, name, email, phone number (and whether Telegram "
+    "verified it), and your role. A preferred category is stored only if you choose one;\n"
+    "- sellers: the same account contact details, plus a listing name, location, "
+    "seller contact email and phone number, and products with photos. Your account "
+    "email and phone are reused for seller contact unless you provide different ones.\n\n"
     "Who can see it: the bot's operator. Other users only see what sellers list: "
-    "the business name, product names, descriptions, prices, stock and photos. "
-    "Emails, addresses and phone numbers are not shown to other users.\n\n"
+    "the listing name, product names, descriptions, prices, stock and photos. "
+    "Names used as listing names are public; emails, locations and phone numbers "
+    "are not shown to other users.\n\n"
     "How long: until you erase it. There is no automatic expiry.\n\n"
     "Your controls: /mydata shows what is stored. /deleteme erases your personal "
     "data, seller profile, products and photos; only your numeric Telegram ID and "
     "the time of erasure are kept."
 )
 SELLER_NOTICE = (
-    "These business details are stored with your profile (see /privacy). Your business "
-    "name and your products are visible to other users; the email, address and phone "
-    "are not."
+    "Your listing name and products are visible to other users. The location, email "
+    "and phone are stored for the bot operator and are not shown to other users. "
+    "If you use your own name as the listing name, that name will be public."
 )
-BUSINESS_PROMPT = "Send business name, email, address, phone separated by commas."
+BUSINESS_PROMPT = (
+    "Choose a listing name: a shop name, nickname or your own name. You do not need "
+    "a registered business. Send: listing name | city/area (or Online)\n"
+    "Example: Jane's finds | Belgrade\n"
+    "I'll reuse your account email and phone for seller contact. To use different "
+    "seller contact details, add: | email | phone."
+)
 
 EMAIL_PATTERN = re.compile(r"[^\s@]+@[^\s@]+\.[^\s@]+")
 PHONE_PATTERN = re.compile(r"\+?[0-9 ()-]{7,40}")
+CATALOG_ID_PROMPT = (
+    "Send a catalog ID from /products or /myproducts, for example 1 or #1."
+)
 
 
 def clean_name(value):
@@ -70,6 +81,13 @@ def clean_phone(value):
     return value
 
 
+def parse_catalog_id(value):
+    raw = value.strip().removeprefix("#")
+    if not re.fullmatch(r"[0-9]{1,19}", raw) or int(raw) <= 0:
+        raise ValueError("Enter a positive catalog ID, such as 1 or #1.")
+    return int(raw)
+
+
 def parse_name_email(text):
     # Split on the last comma so a name such as "Doe, Jane" still works.
     name, separator, email = text.rpartition(",")
@@ -86,15 +104,28 @@ def parse_telegram_phone(raw):
     return clean_phone(raw)
 
 
-def parse_business(text):
+def parse_business(text, account_email=None, account_phone=None):
+    if "|" in text:
+        fields = [part.strip() for part in text.split("|")]
+        if len(fields) not in (2, 4):
+            raise ValueError("Send listing name | city/area, optionally followed by | email | phone.")
+        name, address = fields[:2]
+        if not address or len(address) > 400:
+            raise ValueError("Enter a city/area or Online (up to 400 characters).")
+        email = fields[2] if len(fields) == 4 and fields[2] else account_email
+        phone = fields[3] if len(fields) == 4 and fields[3] else account_phone
+        if not email or not phone:
+            raise ValueError("Account email and phone are missing. Update your account with /profile first.")
+        return clean_name(name), clean_email(email), address, clean_phone(phone)
+    # Accept the earlier four-field format when a user edits an existing message.
     fields = [part.strip() for part in text.split(",")]
     if len(fields) < 4:
-        raise ValueError("Enter business name, email, address, phone separated by commas.")
+        raise ValueError("Send listing name | city/area, for example Jane's finds | Belgrade.")
     # The address may itself contain commas, so it is everything between email and phone.
     name, email, phone = fields[0], fields[1], fields[-1]
     address = ", ".join(fields[2:-1])
     if not address or len(address) > 400:
-        raise ValueError("Enter a business address of at most 400 characters.")
+        raise ValueError("Enter a location of at most 400 characters.")
     return clean_name(name), clean_email(email), address, clean_phone(phone)
 
 
@@ -120,12 +151,15 @@ def parse_product(text):
     return name, category, description or None, price_kobo, quantity
 
 
-def product_text(product, *, detail=False):
+def product_text(product, *, detail=False, seller_view=False):
     amount = Decimal(product["price_kobo"]) / 100
     description = product["description"] or ""
     description = description[:400 if detail else 140]
+    identifier = (f'Your product #{product["seller_number"]} '
+                  f'(catalog ID #{product["product_id"]})' if seller_view
+                  else f'#{product["product_id"]}')
     return (
-        f'#{product["product_id"]} {product["name"]}\n'
+        f'{identifier} {product["name"]}\n'
         f'{product["business_name"]} · {product["category"]}\n'
         f'Price: USD {amount:.2f} · In stock: {product["stock_quantity"]}\n'
         f'{description}'
@@ -140,17 +174,17 @@ def stored_data_text(user, seller, product_count):
         f'Name: {user["full_name"]}',
         f'Email: {user["email"]}',
         f'Phone: {user["phone"]} ({phone_source})',
-        f'Role: {user["role"].lower()}',
+        f'Role: {"seller" if user["role"] == "SELLER" else "buyer"}',
         f'Preferred category: {user["preferred_category"] or "none"}',
     ]
     if seller:
         lines += [
             "",
             "Seller profile:",
-            f'Business name: {seller["business_name"]}',
-            f'Business email: {seller["business_email"]}',
-            f'Address: {seller["address"]}',
-            f'Business phone: {seller["business_phone"]}',
+            f'Listing name: {seller["business_name"]}',
+            f'Seller contact email: {seller["business_email"]}',
+            f'Location: {seller["address"]}',
+            f'Seller contact phone: {seller["business_phone"]}',
             f"Products listed: {product_count}",
         ]
     lines += ["", "Use /deleteme to erase it."]
@@ -181,8 +215,42 @@ def category_buttons():
 def phone_keyboard():
     return ReplyKeyboardMarkup(
         [[KeyboardButton("Share my Telegram phone number", request_contact=True)]],
-        resize_keyboard=True, one_time_keyboard=True,
+        resize_keyboard=True, is_persistent=True, one_time_keyboard=False,
+        input_field_placeholder="Share your number or type it",
     )
+
+
+def role_buttons():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("Seller", callback_data="role:seller"),
+        InlineKeyboardButton("Buyer", callback_data="role:buyer"),
+    ]])
+
+
+def menu_buttons():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("Browse products", callback_data="menu:products"),
+         InlineKeyboardButton("View product", callback_data="menu:product")],
+        [InlineKeyboardButton("My profile", callback_data="menu:profile"),
+         InlineKeyboardButton("My data", callback_data="menu:mydata")],
+        [InlineKeyboardButton("Seller profile", callback_data="menu:sellerprofile"),
+         InlineKeyboardButton("My products", callback_data="menu:myproducts")],
+        [InlineKeyboardButton("Add product", callback_data="menu:addproduct"),
+         InlineKeyboardButton("Add photo", callback_data="menu:photo")],
+        [InlineKeyboardButton("Update stock", callback_data="menu:stock"),
+         InlineKeyboardButton("Categories", callback_data="menu:preferences")],
+        [InlineKeyboardButton("Privacy", callback_data="menu:privacy"),
+         InlineKeyboardButton("Erase my data", callback_data="menu:deleteme")],
+        [InlineKeyboardButton("Start / welcome", callback_data="menu:start")],
+    ])
+
+
+def browse_buttons():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("All products", callback_data="browse:all")],
+        *[[InlineKeyboardButton(name, callback_data=f"browse:{key}")]
+          for key, name in CATEGORIES.items()],
+    ])
 
 
 class BotHandlers:
@@ -193,11 +261,36 @@ class BotHandlers:
     async def run(self, operation, *args):
         return await asyncio.to_thread(operation, *args)
 
+    async def owned_product(self, seller_id, reference):
+        """Seller numbers are local; G-prefixed IDs address the shared catalog."""
+        raw = reference.strip().lower()
+        catalog = raw.startswith("g")
+        digits = raw[1:] if catalog else raw
+        if not re.fullmatch(r"[0-9]{1,19}", digits) or int(digits) <= 0:
+            raise ValueError("Use your product number, or G followed by a catalog ID.")
+        number = int(digits)
+        if catalog:
+            product = await self.run(self.store.get_product, number)
+        else:
+            product = await self.run(self.store.get_seller_product, seller_id, number)
+        if product and product["seller_telegram_user_id"] == seller_id:
+            return product
+        return None
+
     @staticmethod
     def reset_flow(context):
         """Forget the half-finished input of whatever flow the user was in."""
-        for key in ("last_input", "draft", "pending_product_id"):
+        for key in ("last_input", "draft", "pending_product_id",
+                    "pending_product_number", "signup_role",
+                    "phone_keyboard_active"):
             context.user_data.pop(key, None)
+
+    @staticmethod
+    async def hide_phone_keyboard(update, context):
+        if context.user_data.pop("phone_keyboard_active", False):
+            await update.effective_message.reply_text(
+                "Phone input closed.", reply_markup=ReplyKeyboardRemove()
+            )
 
     @staticmethod
     def remember(context, message, step, **extra):
@@ -268,6 +361,7 @@ class BotHandlers:
         await update.effective_message.reply_text(stored_data_text(user, seller, products))
 
     async def delete_me(self, update, context):
+        await self.hide_phone_keyboard(update, context)
         self.reset_flow(context)
         try:
             user = await self.run(self.store.get_user, update.effective_user.id)
@@ -316,6 +410,7 @@ class BotHandlers:
         return ConversationHandler.END
 
     async def start(self, update, context):
+        await self.hide_phone_keyboard(update, context)
         self.reset_flow(context)
         try:
             user = await self.run(self.store.get_user, update.effective_user.id)
@@ -325,29 +420,141 @@ class BotHandlers:
         if user:
             await update.effective_message.reply_text(
                 f'Welcome back, {user["full_name"]}!\n'
-                "Use /products to browse, /profile to update your details, "
-                "/preferences for categories, /sellerprofile to sell, "
-                "/mydata to see what is stored, or /deleteme to erase it."
+                "Choose an action below or send /menu anytime.",
+                reply_markup=menu_buttons(),
             )
             return ConversationHandler.END
         await update.effective_message.reply_text(
-            "Welcome to SMEbot! Before we start, here is what I store.\n\n" + PRIVACY_NOTICE
+            "Welcome to SMEbot! Are you a seller or a buyer?",
+            reply_markup=role_buttons(),
         )
-        await update.effective_message.reply_text(
-            "Please send your full name and email separated by a comma. "
-            "Example: Jane Doe, jane@example.com\nUse /cancel to stop."
-        )
-        return CHOOSING
+        return CLASS_STATE
 
-    async def profile(self, update, context):
+    async def menu(self, update, context):
+        await self.hide_phone_keyboard(update, context)
         self.reset_flow(context)
         await update.effective_message.reply_text(
-            "Send your full name and email separated by a comma. "
-            "Example: Jane Doe, jane@example.com (see /privacy for what is stored)."
+            "Choose an action. You can send /menu again anytime.",
+            reply_markup=menu_buttons(),
+        )
+        return ConversationHandler.END
+
+    async def menu_action(self, update, context):
+        query = update.callback_query
+        if update.effective_chat.type != "private":
+            await query.answer("Please message me in a private chat.", show_alert=True)
+            return ConversationHandler.END
+        await query.answer()
+        action = query.data.removeprefix("menu:")
+        await self.hide_phone_keyboard(update, context)
+        self.reset_flow(context)
+        if action == "products":
+            await query.message.reply_text(
+                "Which products would you like to browse?", reply_markup=browse_buttons()
+            )
+            return BROWSE_CATEGORY
+        if action == "product":
+            await query.message.reply_text(CATALOG_ID_PROMPT)
+            return PRODUCT_ID
+        if action == "photo":
+            await query.message.reply_text(
+                "Send your product number to add a photo (or G plus its catalog ID)."
+            )
+            return PHOTO_ID
+        if action == "stock":
+            await query.message.reply_text(
+                "Send your product number and new stock, for example: 1 5. "
+                "Use G3 5 for catalog ID #3."
+            )
+            return STOCK_INPUT
+        actions = {
+            "start": self.start,
+            "profile": self.profile,
+            "sellerprofile": self.seller_profile,
+            "preferences": self.preferences,
+            "addproduct": self.add_product,
+            "myproducts": self.my_products,
+            "privacy": self.privacy,
+            "mydata": self.my_data,
+            "deleteme": self.delete_me,
+        }
+        callback = actions.get(action)
+        if callback is None:
+            await query.message.reply_text("That menu item is unavailable. Send /menu again.")
+            return ConversationHandler.END
+        result = await callback(update, context)
+        return result if result is not None else ConversationHandler.END
+
+    async def browse_selection(self, update, context):
+        query = update.callback_query
+        if update.effective_chat.type != "private":
+            await query.answer("Please message me in a private chat.", show_alert=True)
+            return ConversationHandler.END
+        await query.answer()
+        key = query.data.removeprefix("browse:")
+        if key not in CATEGORIES and key != "all":
+            return BROWSE_CATEGORY
+        context.args = [key]
+        await self.products(update, context)
+        return ConversationHandler.END
+
+    async def product_id(self, update, context):
+        raw = update.effective_message.text.strip()
+        try:
+            parse_catalog_id(raw)
+        except ValueError:
+            await update.effective_message.reply_text(
+                "Send a positive catalog ID, such as 1 or #1, or /cancel."
+            )
+            return PRODUCT_ID
+        context.args = [raw]
+        await self.product(update, context)
+        return ConversationHandler.END
+
+    async def photo_id(self, update, context):
+        raw = update.effective_message.text.strip()
+        if not re.fullmatch(r"(?:[gG])?[0-9]{1,19}", raw) or int(raw.lstrip("gG")) <= 0:
+            await update.effective_message.reply_text(
+                "Send your product number, or G plus its catalog ID. Use /cancel to stop."
+            )
+            return PHOTO_ID
+        context.args = [raw]
+        return await self.add_photo(update, context)
+
+    async def stock_input(self, update, context):
+        fields = update.effective_message.text.split()
+        if (len(fields) != 2
+                or not re.fullmatch(r"(?:[gG])?[0-9]{1,19}", fields[0])
+                or not re.fullmatch(r"[0-9]{1,19}", fields[1])):
+            await update.effective_message.reply_text(
+                "Send your product number and quantity, for example: 1 5"
+            )
+            return STOCK_INPUT
+        context.args = fields
+        await self.stock(update, context)
+        return ConversationHandler.END
+
+    async def profile(self, update, context):
+        await self.hide_phone_keyboard(update, context)
+        self.reset_flow(context)
+        try:
+            user = await self.run(self.store.get_user, update.effective_user.id)
+        except Exception:
+            await self.failure(update)
+            return ConversationHandler.END
+        if not user:
+            await update.effective_message.reply_text("Register with /start first.")
+            return ConversationHandler.END
+        await update.effective_message.reply_text(
+            "Update your account contact details. Send your full name and email "
+            "separated by a comma. Example: Jane Doe, jane@example.com. "
+            "The bot operator can see these details; other users cannot. "
+            "You can update your seller listing separately with /sellerprofile."
         )
         return CHOOSING
 
     async def seller_profile(self, update, context):
+        await self.hide_phone_keyboard(update, context)
         self.reset_flow(context)
         try:
             user = await self.run(self.store.get_user, update.effective_user.id)
@@ -361,6 +568,7 @@ class BotHandlers:
         return SME_DETAILS
 
     async def preferences(self, update, context):
+        await self.hide_phone_keyboard(update, context)
         self.reset_flow(context)
         try:
             user = await self.run(self.store.get_user, update.effective_user.id)
@@ -385,9 +593,13 @@ class BotHandlers:
             await message.reply_text(f"{exc} Try again or /cancel.")
             return CHOOSING
         context.user_data["draft"] = {"name": name, "email": email}
+        context.user_data["phone_keyboard_active"] = True
         await message.reply_text(
-            f"Thanks, {name}. Now your phone number. Tap the button to share the number "
-            "verified by Telegram, or type a different number, for example +1234567890.",
+            f"Thanks, {name}. Now your account phone number. Only the bot operator "
+            "can see it. Tap the button to share the number "
+            "verified by Telegram, or type a different number, for example +1234567890. "
+            "If you see the typing keyboard instead, tap the keyboard icon beside the "
+            "message field to show the share button.",
             reply_markup=phone_keyboard(),
         )
         return PHONE
@@ -423,12 +635,14 @@ class BotHandlers:
         message = update.effective_message
         draft = context.user_data.get("draft")
         if not draft:
+            context.user_data.pop("phone_keyboard_active", None)
             await message.reply_text("Let's start again: send /start.",
                                      reply_markup=ReplyKeyboardRemove())
             return ConversationHandler.END
         try:
+            role = context.user_data.get("signup_role")
             user = await self.run(self.store.upsert_user, update.effective_user.id,
-                                  draft["name"], draft["email"], phone, verified)
+                                  draft["name"], draft["email"], phone, verified, role)
         except Exception:
             await self.failure(update)
             return PHONE
@@ -436,42 +650,59 @@ class BotHandlers:
             "Phone number saved" + (" (verified by Telegram)." if verified else "."),
             reply_markup=ReplyKeyboardRemove(),
         )
-        if user["role"] == "SELLER":
-            await message.reply_text("Profile updated. Use /addproduct or /myproducts.")
+        context.user_data.pop("phone_keyboard_active", None)
+        if role == "SELLER":
+            await message.reply_text(
+                f"Thanks, {draft['name']}. Now set up your seller listing.\n\n"
+                f"{BUSINESS_PROMPT}\n\n{SELLER_NOTICE}"
+            )
+            return SME_DETAILS
+        if role == "CUSTOMER":
+            await message.reply_text(
+                f"Thanks, {draft['name']}. Your buyer profile is ready. "
+                "Use /menu to explore the bot.", reply_markup=menu_buttons(),
+            )
             return ConversationHandler.END
-        keyboard = [[
-            InlineKeyboardButton("Seller", callback_data="role:seller"),
-            InlineKeyboardButton("Customer", callback_data="role:customer"),
-        ]]
         await message.reply_text(
-            f'Thanks, {draft["name"]}. Are you a seller or a customer?',
-            reply_markup=InlineKeyboardMarkup(keyboard),
+            "Profile updated. Choose an action or send /menu.",
+            reply_markup=menu_buttons(),
         )
-        return CLASS_STATE
+        return ConversationHandler.END
 
     async def classer(self, update, context):
         query = update.callback_query
         await query.answer()
-        if query.data == "role:seller":
-            self.reset_flow(context)
-            await query.message.reply_text(
-                f"Tell me about your business. {BUSINESS_PROMPT}\n\n{SELLER_NOTICE}"
-            )
-            return SME_DETAILS
-        if query.data == "role:customer":
-            self.reset_flow(context)
-            await query.message.reply_text(
-                "Choose a category you like:", reply_markup=category_buttons()
-            )
-            return CHOOSE_PREF
-        return CLASS_STATE
+        role = {"role:seller": "SELLER", "role:buyer": "CUSTOMER",
+                "role:customer": "CUSTOMER"}.get(query.data)
+        if role is None:
+            return CLASS_STATE
+        self.reset_flow(context)
+        context.user_data["signup_role"] = role
+        await query.message.reply_text(
+            ("Seller" if role == "SELLER" else "Buyer") + " privacy notice:\n\n" + PRIVACY_NOTICE
+        )
+        await query.message.reply_text(
+            "First, your account contact details. Send your full name and email "
+            "separated by a comma. The bot operator can see these details; "
+            "other users cannot.\nExample: Jane Doe, jane@example.com\n"
+            "Use /cancel to stop."
+        )
+        return CHOOSING
 
     async def seller_details(self, update, context):
         message = update.effective_message
         corrected = getattr(update, "edited_message", None) is not None
         self.remember(context, message, "business")
         try:
-            business = parse_business(message.text)
+            user = await self.run(self.store.get_user, update.effective_user.id)
+        except Exception:
+            await self.failure(update)
+            return SME_DETAILS
+        if not user:
+            await message.reply_text("Register your account contact details with /start first.")
+            return ConversationHandler.END
+        try:
+            business = parse_business(message.text, user["email"], user["phone"])
         except ValueError as exc:
             await message.reply_text(f"{exc} Try again or /cancel.")
             return SME_DETAILS
@@ -482,7 +713,8 @@ class BotHandlers:
             return SME_DETAILS
         await message.reply_text(
             "Seller profile updated." if corrected
-            else "Seller profile saved. Use /addproduct to list your first product."
+            else "Seller profile saved. Use /menu to list your first product.",
+            reply_markup=menu_buttons() if not corrected else None,
         )
         return ConversationHandler.END
 
@@ -505,6 +737,7 @@ class BotHandlers:
         return ConversationHandler.END
 
     async def add_product(self, update, context):
+        await self.hide_phone_keyboard(update, context)
         self.reset_flow(context)
         try:
             seller = await self.run(self.store.get_seller, update.effective_user.id)
@@ -526,11 +759,15 @@ class BotHandlers:
         last = context.user_data.get("last_input") or {}
         # An edit of the line that already created a product updates that product.
         product_id = None
+        seller_number = None
         if (getattr(update, "edited_message", None) is not None
                 and last.get("step") == "product" and last.get("id") == message.message_id):
             product_id = last.get("product_id")
+            seller_number = last.get("seller_number")
         retry_state = PRODUCT_PHOTO if product_id else PRODUCT_DETAILS
-        self.remember(context, message, "product", **({"product_id": product_id} if product_id else {}))
+        self.remember(context, message, "product", **(
+            {"product_id": product_id, "seller_number": seller_number} if product_id else {}
+        ))
         try:
             fields = parse_product(message.text)
         except ValueError as exc:
@@ -544,20 +781,24 @@ class BotHandlers:
                 await self.failure(update)
                 return retry_state
             await message.reply_text(
-                f"Product #{product_id} updated." if changed
+                f"Your product #{seller_number} updated." if changed and seller_number
+                else f"Product #{product_id} updated." if changed
                 else "That product no longer exists."
             )
             return PRODUCT_PHOTO if changed else ConversationHandler.END
         try:
-            product_id = await self.run(self.store.create_product,
-                                        update.effective_user.id, *fields)
+            product_id, seller_number = await self.run(
+                self.store.create_product, update.effective_user.id, *fields, True)
         except Exception:
             await self.failure(update)
             return PRODUCT_DETAILS
         context.user_data["pending_product_id"] = product_id
+        context.user_data["pending_product_number"] = seller_number
         context.user_data["last_input"]["product_id"] = product_id
+        context.user_data["last_input"]["seller_number"] = seller_number
         await message.reply_text(
-            f"Product #{product_id} saved. Send one product photo (max 5 MB), "
+            f"Your product #{seller_number} saved (catalog ID #{product_id}). "
+            "Send one product photo (max 5 MB), "
             "or /skip to finish without a photo. You can still correct the details by "
             "editing your message."
         )
@@ -565,8 +806,11 @@ class BotHandlers:
 
     async def photo_for_product(self, update, context):
         product_id = context.user_data.get("pending_product_id")
+        seller_number = context.user_data.get("pending_product_number")
         if product_id is None:
-            await update.effective_message.reply_text("Use /addproduct or /photo <product ID> first.")
+            await update.effective_message.reply_text(
+                "Use /addproduct or /photo <your product number> first."
+            )
             return ConversationHandler.END
         photo = update.effective_message.photo[-1]
         if photo.file_size and photo.file_size > MAX_PHOTO_BYTES:
@@ -600,33 +844,47 @@ class BotHandlers:
             await self.failure(update)
             return PRODUCT_PHOTO
         context.user_data.pop("pending_product_id", None)
-        await update.effective_message.reply_text(f"Photo saved for product #{product_id}.")
+        context.user_data.pop("pending_product_number", None)
+        label = (f"your product #{seller_number}" if seller_number
+                 else f"product #{product_id}")
+        await update.effective_message.reply_text(f"Photo saved for {label}.")
         return ConversationHandler.END
 
     async def add_photo(self, update, context):
+        await self.hide_phone_keyboard(update, context)
         self.reset_flow(context)
+        if not context.args:
+            await update.effective_message.reply_text(
+                "Send your product number to add a photo (or G plus its catalog ID)."
+            )
+            return PHOTO_ID
         try:
-            product_id = int(context.args[0])
-            product = await self.run(self.store.get_product, product_id)
-        except (IndexError, ValueError):
-            await update.effective_message.reply_text("Use /photo <product ID>.")
+            product = await self.owned_product(update.effective_user.id, context.args[0])
+        except ValueError as exc:
+            await update.effective_message.reply_text(str(exc))
             return ConversationHandler.END
         except Exception:
             await self.failure(update)
             return ConversationHandler.END
-        if not product or product["seller_telegram_user_id"] != update.effective_user.id:
+        if not product:
             await update.effective_message.reply_text("That product is not yours.")
             return ConversationHandler.END
         if product["photo_object_key"]:
             await update.effective_message.reply_text("This product already has a photo.")
             return ConversationHandler.END
-        context.user_data["pending_product_id"] = product_id
+        context.user_data["pending_product_id"] = product["product_id"]
+        context.user_data["pending_product_number"] = product["seller_number"]
         await update.effective_message.reply_text("Send one photo (max 5 MB), or /skip.")
         return PRODUCT_PHOTO
 
     async def skip(self, update, context):
-        context.user_data.pop("pending_product_id", None)
-        await update.effective_message.reply_text("Done. You can add a photo later with /photo <product ID>.")
+        if context.user_data.pop("pending_product_id", None) is None:
+            await update.effective_message.reply_text("There is no product photo to skip.")
+            return ConversationHandler.END
+        context.user_data.pop("pending_product_number", None)
+        await update.effective_message.reply_text(
+            "Done. You can add a photo later with /photo <your product number>."
+        )
         return ConversationHandler.END
 
     async def products(self, update, context):
@@ -650,7 +908,10 @@ class BotHandlers:
             await update.effective_message.reply_text(
                 "\n\n".join(product_text(product) for product in products[offset:offset + 5])
             )
-        await update.effective_message.reply_text("Use /product <ID> to view a photo.")
+        await update.effective_message.reply_text(
+            "Use /product <catalog ID> to view a photo. The ID is the #number "
+            "before each product name."
+        )
 
     async def my_products(self, update, context):
         try:
@@ -664,15 +925,18 @@ class BotHandlers:
             return
         for offset in range(0, len(products), 5):
             await update.effective_message.reply_text(
-                "\n\n".join(product_text(product) for product in products[offset:offset + 5])
+                "\n\n".join(product_text(product, seller_view=True)
+                            for product in products[offset:offset + 5])
             )
 
     async def product(self, update, context):
         try:
-            product_id = int(context.args[0])
+            product_id = parse_catalog_id(context.args[0])
             product = await self.run(self.store.get_product, product_id)
         except (IndexError, ValueError):
-            await update.effective_message.reply_text("Use /product <ID>.")
+            await update.effective_message.reply_text(
+                "Use /product <catalog ID>, for example /product 1 or /product #1."
+            )
             return
         except Exception:
             await self.failure(update)
@@ -680,7 +944,10 @@ class BotHandlers:
         if not product:
             await update.effective_message.reply_text("Product not found.")
             return
-        caption = product_text(product, detail=True)
+        caption = product_text(
+            product, detail=True,
+            seller_view=product["seller_telegram_user_id"] == update.effective_user.id,
+        )
         if not product["photo_object_key"]:
             await update.effective_message.reply_text(caption)
             return
@@ -690,22 +957,56 @@ class BotHandlers:
         except Exception:
             await self.failure(update)
 
+    async def view_product(self, update, context):
+        await self.hide_phone_keyboard(update, context)
+        self.reset_flow(context)
+        if not context.args:
+            await update.effective_message.reply_text(CATALOG_ID_PROMPT)
+            return PRODUCT_ID
+        await self.product(update, context)
+        return ConversationHandler.END
+
+    async def change_stock(self, update, context):
+        await self.hide_phone_keyboard(update, context)
+        self.reset_flow(context)
+        if not context.args:
+            await update.effective_message.reply_text(
+                "Send your product number and new stock, for example: 1 5. "
+                "Use G3 5 for catalog ID #3."
+            )
+            return STOCK_INPUT
+        await self.stock(update, context)
+        return ConversationHandler.END
+
     async def stock(self, update, context):
         try:
-            product_id, quantity = map(int, context.args)
-            if product_id <= 0 or not 0 <= quantity < 10**10:
+            reference, quantity_text = context.args
+            quantity = int(quantity_text)
+            if not 0 <= quantity < 10**10:
                 raise ValueError()
+            product = await self.owned_product(update.effective_user.id, reference)
         except ValueError:
-            await update.effective_message.reply_text("Use /stock <product ID> <nonnegative quantity>.")
+            await update.effective_message.reply_text(
+                "Use /stock <your product number> <nonnegative quantity>. "
+                "Prefix a catalog ID with G."
+            )
+            return
+        except Exception:
+            await self.failure(update)
+            return
+        if not product:
+            await update.effective_message.reply_text(
+                "That product is not yours or does not exist."
+            )
             return
         try:
             changed = await self.run(self.store.set_stock, update.effective_user.id,
-                                     product_id, quantity)
+                                     product["product_id"], quantity)
         except Exception:
             await self.failure(update)
             return
         await update.effective_message.reply_text(
-            f"Stock updated for product #{product_id}." if changed
+            f'Stock updated for your product #{product["seller_number"]}.' if changed
             else "That product is not yours or does not exist."
         )
 

@@ -56,7 +56,11 @@ COLUMN_MIGRATIONS = (
 USER_COLUMNS = "telegram_user_id, full_name, email, phone, phone_verified, role, preferred_category"
 SELLER_COLUMNS = "telegram_user_id, business_name, business_email, address, business_phone"
 PRODUCT_COLUMNS = """
-    p.product_id, p.seller_telegram_user_id, p.name, p.category,
+    p.product_id, p.seller_telegram_user_id,
+    (SELECT COUNT(*) FROM products earlier
+     WHERE earlier.seller_telegram_user_id = p.seller_telegram_user_id
+       AND earlier.product_id <= p.product_id) AS seller_number,
+    p.name, p.category,
     p.description, p.price_kobo, p.stock_quantity, p.photo_object_key,
     s.business_name
 """
@@ -105,16 +109,19 @@ class SQLiteStore:
             user["phone_verified"] = bool(user["phone_verified"])
             return user
 
-    def upsert_user(self, telegram_user_id, full_name, email, phone, phone_verified=False):
+    def upsert_user(self, telegram_user_id, full_name, email, phone, phone_verified=False,
+                    role=None):
         with self.connect() as connection:
             connection.execute("""
-                INSERT INTO users (telegram_user_id, full_name, email, phone, phone_verified)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO users (telegram_user_id, full_name, email, phone, phone_verified, role)
+                VALUES (?, ?, ?, ?, ?, COALESCE(?, 'CUSTOMER'))
                 ON CONFLICT(telegram_user_id) DO UPDATE SET
                     full_name=excluded.full_name, email=excluded.email,
                     phone=excluded.phone, phone_verified=excluded.phone_verified,
+                    role=COALESCE(?, users.role),
                     deleted_at=NULL
-            """, (telegram_user_id, full_name, email, phone, int(phone_verified)))
+            """, (telegram_user_id, full_name, email, phone, int(phone_verified),
+                  role, role))
         return self.get_user(telegram_user_id)
 
     def set_preference(self, telegram_user_id, category):
@@ -154,7 +161,7 @@ class SQLiteStore:
             return dict(row) if row else None
 
     def create_product(self, seller_id, name, category, description,
-                       price_kobo, stock_quantity):
+                       price_kobo, stock_quantity, with_number=False):
         with self.connect() as connection:
             cursor = connection.execute("""
                 INSERT INTO products (seller_telegram_user_id, name, category,
@@ -162,7 +169,14 @@ class SQLiteStore:
                 VALUES (?, ?, ?, ?, ?, ?)
             """, (seller_id, name, category, description,
                   price_kobo, stock_quantity))
-            return cursor.lastrowid
+            product_id = cursor.lastrowid
+            if not with_number:
+                return product_id
+            seller_number = connection.execute("""
+                SELECT COUNT(*) FROM products
+                WHERE seller_telegram_user_id = ? AND product_id <= ?
+            """, (seller_id, product_id)).fetchone()[0]
+            return product_id, seller_number
 
     def update_product(self, seller_id, product_id, name, category, description,
                        price_kobo, stock_quantity):
@@ -202,6 +216,21 @@ class SQLiteStore:
                 JOIN sellers s ON s.telegram_user_id = p.seller_telegram_user_id
                 WHERE p.product_id = ? AND p.deleted_at IS NULL
             """, (product_id,)).fetchone()
+            return dict(row) if row else None
+
+    def get_seller_product(self, seller_id, seller_number):
+        """Resolve a seller's stable listing number, counting erased rows too."""
+        if seller_number <= 0:
+            return None
+        with self.connect() as connection:
+            row = connection.execute(f"""
+                SELECT {PRODUCT_COLUMNS} FROM products p
+                JOIN sellers s ON s.telegram_user_id = p.seller_telegram_user_id
+                WHERE p.seller_telegram_user_id = ? AND p.deleted_at IS NULL
+                  AND (SELECT COUNT(*) FROM products earlier
+                       WHERE earlier.seller_telegram_user_id = p.seller_telegram_user_id
+                         AND earlier.product_id <= p.product_id) = ?
+            """, (seller_id, seller_number)).fetchone()
             return dict(row) if row else None
 
     def list_products(self, category=None, seller_id=None):

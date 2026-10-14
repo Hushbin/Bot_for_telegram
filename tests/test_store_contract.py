@@ -67,6 +67,13 @@ class StoreContract:
         self.assertIs(updated["phone_verified"], True)
         self.assertEqual(updated["telegram_user_id"], self.uid)
 
+    def test_signup_role_is_stored_and_profile_edits_preserve_it(self):
+        seller = self.store.upsert_user(self.uid, "Jane", "jane@example.com",
+                                        "+1111111", False, "SELLER")
+        self.assertEqual(seller["role"], "SELLER")
+        edited = self.store.upsert_user(self.uid, "Jane D", "jd@example.com", "+2222222")
+        self.assertEqual(edited["role"], "SELLER")
+
     def test_preference_is_stored(self):
         self.register()
         self.store.set_preference(self.uid, ART)
@@ -103,6 +110,36 @@ class StoreContract:
         self.assertEqual(found["price_kobo"], 1999)
         self.assertIsNone(found["photo_object_key"])
         self.assertIsNone(self.store.get_product(product_id + 10**6))
+
+    def test_each_seller_has_stable_product_numbers(self):
+        self.register(seller=True)
+        self.register(self.other, seller=True)
+        self.product(self.other, name="Other seller's first")
+        first_id, first_number = self.store.create_product(
+            self.uid, "Mine", CLOTHING, None, 100, 1, True)
+        second_id, second_number = self.store.create_product(
+            self.uid, "Mine again", CLOTHING, None, 200, 1, True)
+        self.assertEqual((first_number, second_number), (1, 2))
+        self.assertEqual(self.store.get_product(first_id)["seller_number"], 1)
+        self.assertEqual(self.store.get_product(second_id)["seller_number"], 2)
+        self.assertEqual(self.store.get_seller_product(self.uid, 1)["product_id"], first_id)
+        self.assertIsNone(self.store.get_seller_product(self.other, 2))
+        self.assertEqual([p["seller_number"] for p in self.store.list_products(
+            seller_id=self.uid)], [2, 1])
+
+    def test_erased_product_numbers_are_not_reused(self):
+        self.register(seller=True)
+        _, first_number = self.store.create_product(
+            self.uid, "Old", CLOTHING, None, 100, 1, True)
+        self.assertEqual(first_number, 1)
+        self.store.erase_user(self.uid)
+        self.store.upsert_user(self.uid, "Jane", "jane@example.com", "+1234567890")
+        self.store.upsert_seller(self.uid, "New shop", "shop@example.com", "Street", "+1")
+        _, second_number = self.store.create_product(
+            self.uid, "New", CLOTHING, None, 100, 1, True)
+        self.assertEqual(second_number, 2)
+        self.assertIsNone(self.store.get_seller_product(self.uid, 1))
+        self.assertEqual(self.store.get_seller_product(self.uid, 2)["name"], "New")
 
     def test_only_the_owner_can_change_a_product(self):
         self.register(seller=True)

@@ -27,10 +27,12 @@ class FakeStore:
             return None
         return {key: user[key] for key in USER_KEYS}
 
-    def upsert_user(self, user_id, name, email, phone, phone_verified=False):
+    def upsert_user(self, user_id, name, email, phone, phone_verified=False, role=None):
         user = self.users.setdefault(user_id, {"role": "CUSTOMER", "preferred_category": None})
         user.update(telegram_user_id=user_id, full_name=name, email=email, phone=phone,
                     phone_verified=bool(phone_verified), deleted=False)
+        if role is not None:
+            user["role"] = role
         return self.get_user(user_id)
 
     def set_preference(self, user_id, category):
@@ -51,7 +53,8 @@ class FakeStore:
             return None
         return {key: seller[key] for key in SELLER_KEYS}
 
-    def create_product(self, user_id, name, category, description, price_kobo, stock):
+    def create_product(self, user_id, name, category, description, price_kobo, stock,
+                       with_number=False):
         if user_id not in self.sellers:
             raise LookupError("Unknown seller")
         product_id = len(self.products) + 1
@@ -60,7 +63,10 @@ class FakeStore:
             category=category, description=description, price_kobo=price_kobo,
             stock_quantity=stock, photo_object_key=None, photo_version_id=None,
             deleted=False)
-        return product_id
+        seller_number = sum(1 for product in self.products.values()
+                            if product["seller_telegram_user_id"] == user_id
+                            and product["product_id"] <= product_id)
+        return (product_id, seller_number) if with_number else product_id
 
     def _live(self, product_id, seller_id=None):
         product = self.products.get(product_id)
@@ -75,11 +81,27 @@ class FakeStore:
             "product_id", "seller_telegram_user_id", "name", "category", "description",
             "price_kobo", "stock_quantity", "photo_object_key")}
         view["business_name"] = self.sellers[product["seller_telegram_user_id"]]["business_name"]
+        view["seller_number"] = sum(
+            1 for earlier in self.products.values()
+            if earlier["seller_telegram_user_id"] == product["seller_telegram_user_id"]
+            and earlier["product_id"] <= product["product_id"]
+        )
         return view
 
     def get_product(self, product_id):
         product = self._live(product_id)
         return self._view(product) if product else None
+
+    def get_seller_product(self, seller_id, seller_number):
+        if seller_number <= 0:
+            return None
+        products = sorted((p for p in self.products.values()
+                           if p["seller_telegram_user_id"] == seller_id),
+                          key=lambda p: p["product_id"])
+        if seller_number > len(products):
+            return None
+        product = products[seller_number - 1]
+        return self._view(product) if not product["deleted"] else None
 
     def update_product(self, user_id, product_id, name, category, description,
                        price_kobo, stock):

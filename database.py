@@ -56,7 +56,8 @@ class OracleStore:
                 "run scripts/setup_db.py before starting the bot."
             ) from exc
 
-    def upsert_user(self, telegram_user_id, full_name, email, phone, phone_verified=False):
+    def upsert_user(self, telegram_user_id, full_name, email, phone, phone_verified=False,
+                    role=None):
         verified = int(phone_verified)
         with self.connect() as connection:
             with connection.cursor() as cursor:
@@ -66,14 +67,17 @@ class OracleStore:
                     ON (u.telegram_user_id = incoming.telegram_user_id)
                     WHEN MATCHED THEN UPDATE SET
                         full_name = :full_name, email = :email, phone = :phone,
-                        phone_verified = :phone_verified, deleted_at = NULL,
+                        phone_verified = :phone_verified,
+                        role = COALESCE(:role, u.role), deleted_at = NULL,
                         updated_at = SYSTIMESTAMP
                     WHEN NOT MATCHED THEN INSERT
-                        (telegram_user_id, full_name, email, phone, phone_verified)
+                        (telegram_user_id, full_name, email, phone, phone_verified, role)
                         VALUES (:telegram_user_id_insert, :full_name_insert,
-                                :email_insert, :phone_insert, :phone_verified_insert)
+                                :email_insert, :phone_insert, :phone_verified_insert,
+                                COALESCE(:role_insert, 'CUSTOMER'))
                 """, telegram_user_id=telegram_user_id, full_name=full_name,
                     email=email, phone=phone, phone_verified=verified,
+                    role=role, role_insert=role,
                     telegram_user_id_insert=telegram_user_id,
                     full_name_insert=full_name, email_insert=email, phone_insert=phone,
                     phone_verified_insert=verified)
@@ -143,7 +147,7 @@ class OracleStore:
                 return row_dict(cursor, cursor.fetchone())
 
     def create_product(self, seller_id, name, category, description,
-                       price_kobo, stock_quantity):
+                       price_kobo, stock_quantity, with_number=False):
         with self.connect() as connection:
             with connection.cursor() as cursor:
                 new_id = cursor.var(oracledb.DB_TYPE_NUMBER)
@@ -158,8 +162,15 @@ class OracleStore:
                     description=description, price_kobo=price_kobo,
                     stock_quantity=stock_quantity, new_id=new_id)
                 product_id = int(new_id.getvalue()[0])
+                if with_number:
+                    cursor.execute(f"""
+                        SELECT COUNT(*) FROM {self.schema}.PRODUCTS
+                        WHERE seller_telegram_user_id = :seller_id
+                          AND product_id <= :product_id
+                    """, seller_id=seller_id, product_id=product_id)
+                    seller_number = int(cursor.fetchone()[0])
             connection.commit()
-        return product_id
+        return (product_id, seller_number) if with_number else product_id
 
     def update_product(self, seller_id, product_id, name, category, description,
                        price_kobo, stock_quantity):
@@ -212,7 +223,11 @@ class OracleStore:
         with self.connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(f"""
-                    SELECT p.product_id, p.seller_telegram_user_id, p.name,
+                    SELECT p.product_id, p.seller_telegram_user_id,
+                           (SELECT COUNT(*) FROM {self.schema}.PRODUCTS earlier
+                            WHERE earlier.seller_telegram_user_id = p.seller_telegram_user_id
+                              AND earlier.product_id <= p.product_id) AS seller_number,
+                           p.name,
                            p.category, p.description, p.price_kobo,
                            p.stock_quantity, p.photo_object_key, s.business_name
                     FROM {self.schema}.PRODUCTS p JOIN {self.schema}.SELLERS s
@@ -233,7 +248,11 @@ class OracleStore:
         with self.connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(f"""
-                    SELECT p.product_id, p.seller_telegram_user_id, p.name,
+                    SELECT p.product_id, p.seller_telegram_user_id,
+                           (SELECT COUNT(*) FROM {self.schema}.PRODUCTS earlier
+                            WHERE earlier.seller_telegram_user_id = p.seller_telegram_user_id
+                              AND earlier.product_id <= p.product_id) AS seller_number,
+                           p.name,
                            p.category, p.description, p.price_kobo,
                            p.stock_quantity, p.photo_object_key, s.business_name
                     FROM {self.schema}.PRODUCTS p JOIN {self.schema}.SELLERS s
@@ -242,6 +261,28 @@ class OracleStore:
                     ORDER BY p.product_id DESC FETCH FIRST 20 ROWS ONLY
                 """, binds)
                 return [row_dict(cursor, row) for row in cursor.fetchall()]
+
+    def get_seller_product(self, seller_id, seller_number):
+        """Resolve a seller's stable listing number, counting erased rows too."""
+        if seller_number <= 0:
+            return None
+        with self.connect() as connection:
+            with connection.cursor() as cursor:
+                cursor.execute(f"""
+                    SELECT p.product_id, p.seller_telegram_user_id,
+                           :seller_number AS seller_number, p.name, p.category,
+                           p.description, p.price_kobo, p.stock_quantity,
+                           p.photo_object_key, s.business_name
+                    FROM {self.schema}.PRODUCTS p JOIN {self.schema}.SELLERS s
+                      ON p.seller_telegram_user_id = s.telegram_user_id
+                    WHERE p.seller_telegram_user_id = :seller_id
+                      AND p.deleted_at IS NULL
+                      AND (SELECT COUNT(*) FROM {self.schema}.PRODUCTS earlier
+                           WHERE earlier.seller_telegram_user_id = p.seller_telegram_user_id
+                             AND earlier.product_id <= p.product_id) = :number_match
+                """, seller_id=seller_id, seller_number=seller_number,
+                    number_match=seller_number)
+                return row_dict(cursor, cursor.fetchone())
 
     def count_products(self, seller_id):
         with self.connect() as connection:
