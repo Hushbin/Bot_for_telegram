@@ -1,10 +1,12 @@
 """Runtime configuration. Load secrets locally or inject them at deployment time."""
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+from vault_secrets import load_vault_secrets
 
 
 load_dotenv()
@@ -13,12 +15,12 @@ load_dotenv()
 @dataclass(frozen=True)
 class Settings:
     backend: str
-    bot_token: str
+    bot_token: str = field(repr=False)
     db_dsn: str
     db_wallet_dir: str
-    db_wallet_password: str
+    db_wallet_password: str = field(repr=False)
     db_user: str
-    db_password: str
+    db_password: str = field(repr=False)
     oci_namespace: str
     oci_bucket_name: str
     oci_auth: str
@@ -32,27 +34,52 @@ def load_settings() -> Settings:
     backend = os.getenv("APP_BACKEND", "oci").lower()
     if backend not in ("oci", "local"):
         raise ValueError("APP_BACKEND must be oci or local")
-    required = ("BOT_TOKEN",)
-    if backend == "oci":
-        required += (
-            "DB_DSN", "DB_WALLET_DIR", "DB_WALLET_PASSWORD",
-            "DB_USER", "DB_PASSWORD", "OCI_NAMESPACE", "OCI_BUCKET_NAME",
-        )
-    missing = [name for name in required if not os.environ.get(name)]
-    if missing:
-        raise ValueError("Missing settings: " + ", ".join(missing))
+    secrets_source = os.getenv("SECRETS_SOURCE", "env").lower()
+    if secrets_source not in ("env", "oci_vault"):
+        raise ValueError("SECRETS_SOURCE must be env or oci_vault")
+    if backend == "local" and secrets_source != "env":
+        raise ValueError("Local mode requires SECRETS_SOURCE=env")
     auth = os.getenv("OCI_AUTH", "config_file")
     if backend == "oci" and auth not in ("config_file", "instance_principal", "resource_principal"):
         raise ValueError("OCI_AUTH must be config_file, instance_principal, or resource_principal")
+
+    required = (("DB_DSN", "DB_WALLET_DIR", "DB_USER", "OCI_NAMESPACE", "OCI_BUCKET_NAME")
+                if backend == "oci" else ())
+    if secrets_source == "env":
+        required += ("BOT_TOKEN",)
+        if backend == "oci":
+            required += ("DB_WALLET_PASSWORD", "DB_PASSWORD")
+    else:
+        if auth != "instance_principal":
+            raise ValueError("OCI Vault mode requires OCI_AUTH=instance_principal")
+        required += ("BOT_TOKEN_SECRET_OCID", "DB_PASSWORD_SECRET_OCID",
+                     "DB_WALLET_PASSWORD_SECRET_OCID")
+    missing = [name for name in required if not os.environ.get(name)]
+    if missing:
+        raise ValueError("Missing settings: " + ", ".join(missing))
+    if secrets_source == "oci_vault":
+        secret_ids = {
+            name: os.environ[f"{name}_SECRET_OCID"]
+            for name in ("BOT_TOKEN", "DB_PASSWORD", "DB_WALLET_PASSWORD")
+        }
+        if any(not secret_id.startswith("ocid1.vaultsecret.") for secret_id in secret_ids.values()):
+            raise ValueError("OCI Vault settings must contain Vault secret OCIDs")
+        secrets = load_vault_secrets(secret_ids)
+    else:
+        secrets = {
+            "BOT_TOKEN": os.getenv("BOT_TOKEN", ""),
+            "DB_PASSWORD": os.getenv("DB_PASSWORD", ""),
+            "DB_WALLET_PASSWORD": os.getenv("DB_WALLET_PASSWORD", ""),
+        }
     local_root = Path(__file__).resolve().parent / ".local"
     return Settings(
         backend=backend,
-        bot_token=os.environ["BOT_TOKEN"],
+        bot_token=secrets["BOT_TOKEN"],
         db_dsn=os.getenv("DB_DSN", ""),
         db_wallet_dir=os.getenv("DB_WALLET_DIR", ""),
-        db_wallet_password=os.getenv("DB_WALLET_PASSWORD", ""),
+        db_wallet_password=secrets["DB_WALLET_PASSWORD"],
         db_user=os.getenv("DB_USER", ""),
-        db_password=os.getenv("DB_PASSWORD", ""),
+        db_password=secrets["DB_PASSWORD"],
         oci_namespace=os.getenv("OCI_NAMESPACE", ""),
         oci_bucket_name=os.getenv("OCI_BUCKET_NAME", ""),
         oci_auth=auth,

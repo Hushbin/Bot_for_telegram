@@ -153,8 +153,21 @@ One-time VM setup, from a trusted workstation that can SSH to the VM as `ubuntu`
    scp deploy/bootstrap_vm.sh deploy/activate_release.sh deploy/smebot.service ~/.ssh/smebot-deploy.pub ubuntu@<bot-public-ip>:/tmp/
    ssh ubuntu@<bot-public-ip> 'sudo bash /tmp/bootstrap_vm.sh /tmp/smebot-deploy.pub'
    ```
-3. Install runtime values from [bot.env.example](deploy/bot.env.example) as `/etc/smebot/bot.env`, owned by `root:smebot` with mode `0640`. Put `tnsnames.ora` and `ewallet.pem` in `/etc/smebot/wallet`, owned by `root:smebot` with mode `0640`. Use the existing `SME_BOT` runtime password and wallet password. Set `OCI_AUTH=instance_principal`. Do not put these values in GitHub secrets for deployment.
-4. Apply the infrastructure repository's `environments/host/` Terraform stack. It manages the `smebot-dev-bot-runtime` dynamic group matching **only** the bot instance OCID and a policy limited to object create, read, and delete on `smebot-dev-media`. The bot uses its [instance principal](https://docs.oracle.com/en-us/iaas/Content/Identity/callresources/Configuring_the_SDK_CLI_or_Terraform.htm) for photos. Allow several minutes for a new OCI policy to take effect.
+3. Put `tnsnames.ora` and `ewallet.pem` in `/etc/smebot/wallet`, owned by `root:smebot` with mode `0640`. Install [bot.env.example](deploy/bot.env.example) as `/etc/smebot/bot.env`, also owned by `root:smebot` with mode `0640`, after filling in the three Vault secret OCIDs. The file contains no token or passwords in Vault mode.
+4. Apply the infrastructure repository's `environments/host/` Terraform stack. Its `smebot-dev-bot-runtime` dynamic group matches **only** the bot VM. Separate policies allow media operations on `smebot-dev-media` and reading only the three named runtime secret bundles. Allow several minutes for a new OCI policy to take effect. The bot uses its [instance principal](https://docs.oracle.com/en-us/iaas/Content/Identity/Tasks/callingservicesfrominstances.htm) for both services.
+
+### Move an existing VM to OCI Vault
+
+The development Vault and its software-protected key already exist. Create these three **separate** secrets in that Vault using OCI Console and the values currently used by the VM: `smebot-dev-bot-token` (`BOT_TOKEN`), `smebot-dev-db-runtime-password` (`DB_PASSWORD`), and `smebot-dev-db-wallet-password` (`DB_WALLET_PASSWORD`). Select the existing `smebot-dev-secrets-key`. Do not place secret contents in Terraform, CI variables, shell command arguments, or logs. Record the three secret OCIDs; OCI keeps the secret contents in Vault. The database ADMIN secret is separate and is not readable by the bot VM.
+
+For an existing deployment, switch in stages:
+
+1. Apply the hosting IAM policy and create the secrets. Check the three secret bundles have a current version and wait for IAM propagation.
+2. Deploy the Vault-capable bot while the VM's existing `bot.env` still uses `SECRETS_SOURCE=env` (or omits it) and still has plaintext values. Confirm the new release is healthy.
+3. Update `/etc/smebot/bot.env` to `SECRETS_SOURCE=oci_vault`, the three `*_SECRET_OCID` entries from [bot.env.example](deploy/bot.env.example), and `OCI_AUTH=instance_principal`. The bot fetches current secret values once at startup and fails closed if any retrieval fails. Restart `smebot.service`; check `systemctl is-active smebot.service`, its journal for errors, `/start`, and one database-backed command.
+4. After a healthy Vault-backed restart, remove `BOT_TOKEN`, `DB_PASSWORD`, and `DB_WALLET_PASSWORD` from the VM file and restart once more. Retain a secure recovery copy outside the VM for a manual rollback to an older release, which cannot read Vault. Later secret rotations require a bot restart; coordinate database password rotation with Oracle and token rotation with BotFather.
+
+Local development continues using the ignored `.env` file and `SECRETS_SOURCE=env` (the default). GitHub deployment secrets are not used for these VM runtime credentials. Keep the mTLS wallet files on the VM; Vault stores the wallet **password**, not the wallet files.
 
 Create a GitHub environment named `dev-bot`, restricted to deployments from `master`. Give it these secrets:
 
