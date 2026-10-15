@@ -129,3 +129,14 @@ class RecoveryTests(unittest.TestCase):
             RuntimeError("listing unavailable"))
         with self.assertRaisesRegex(RuntimeError, "listing unavailable"):
             restore_database(FakeConnection(), self.storage, key)
+
+    def test_old_naive_snapshot_is_treated_as_utc(self):
+        manifest_key = export_database(FakeConnection(), self.storage)
+        manifest = self.storage.get_json(manifest_key)
+        manifest["snapshot_at"] = "2026-10-15T00:00:00"
+        self.storage.put_json(manifest_key, manifest)
+        self.client.objects["erasures/99/test.json"] = json.dumps({
+            "telegram_user_id": 99, "erased_at": "2026-10-16T00:00:00+00:00"
+        }).encode()
+        self.assertEqual(self.storage.erasures_after(
+            datetime.fromisoformat(manifest["snapshot_at"])), {99})

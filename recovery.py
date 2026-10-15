@@ -31,9 +31,15 @@ def utc_now():
     return datetime.now(timezone.utc)
 
 
+def as_utc(value):
+    """Oracle Thin can return a UTC session timestamp without tzinfo."""
+    return (value.replace(tzinfo=timezone.utc) if value.tzinfo is None
+            else value.astimezone(timezone.utc))
+
+
 def encode_value(value):
     if isinstance(value, datetime):
-        return value.isoformat()
+        return as_utc(value).isoformat()
     if isinstance(value, Decimal):
         return int(value) if value == int(value) else str(value)
     return value
@@ -83,7 +89,7 @@ class RecoveryStorage:
             page = self.client.list_objects(self.namespace, self.bucket, **kwargs).data
             for item in page.objects:
                 marker = self.get_json(item.name)
-                if datetime.fromisoformat(marker["erased_at"]) > snapshot_at:
+                if as_utc(datetime.fromisoformat(marker["erased_at"])) > as_utc(snapshot_at):
                     erased_ids.add(int(marker["telegram_user_id"]))
             start = page.next_start_with
             if not start:
@@ -92,7 +98,7 @@ class RecoveryStorage:
 
     def latest_export_age(self):
         latest = self.get_json("latest.json")
-        return (utc_now() - datetime.fromisoformat(latest["snapshot_at"])).total_seconds()
+        return (utc_now() - as_utc(datetime.fromisoformat(latest["snapshot_at"]))).total_seconds()
 
 
 def export_database(connection, storage):
@@ -106,9 +112,10 @@ def export_database(connection, storage):
     temporary.close()
     try:
         with connection.cursor() as cursor, gzip.open(path, "wt", encoding="utf-8") as stream:
+            cursor.execute("ALTER SESSION SET TIME_ZONE = 'UTC'")
             cursor.execute("SET TRANSACTION READ ONLY")
             cursor.execute("SELECT SYSTIMESTAMP FROM dual")
-            snapshot_at = cursor.fetchone()[0].isoformat()
+            snapshot_at = as_utc(cursor.fetchone()[0]).isoformat()
             stream.write(json.dumps({"format": 1, "snapshot_at": snapshot_at}) + "\n")
             for table, columns in TABLE_COLUMNS.items():
                 cursor.execute(f"SELECT {', '.join(columns)} FROM {SCHEMA}.{table}")
