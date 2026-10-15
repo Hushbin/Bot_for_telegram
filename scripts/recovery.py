@@ -47,7 +47,12 @@ async def telegram_ok(token):
 
 def publish_health(values, compartment_id, instance_id):
     signer = oci.auth.signers.InstancePrincipalsSecurityTokenSigner()
-    client = oci.monitoring.MonitoringClient({}, signer=signer)
+    # PostMetricData has a separate ingestion endpoint. The normal telemetry
+    # endpoint returns 404 even when the instance principal has METRIC_WRITE.
+    client = oci.monitoring.MonitoringClient(
+        {}, signer=signer,
+        service_endpoint=f"https://telemetry-ingestion.{signer.region}.oraclecloud.com",
+    )
     timestamp = datetime.now(timezone.utc)
     metrics = [oci.monitoring.models.MetricDataDetails(
         compartment_id=compartment_id, namespace="smebot_health", name="Healthy",
