@@ -83,20 +83,32 @@ session_id=$(oci bastion session list --bastion-id "$bastion_id" \
 [[ $session_id == ocid1.bastionsession.* ]]
 
 # OCI's per-session identity restricts the tunnel to this VM and port.
-ssh -i "$work/bastion_key" -o StrictHostKeyChecking=accept-new \
-  -o UserKnownHostsFile="$work/bastion_known_hosts" \
-  -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
-  -N -L 127.0.0.1:2222:"$BOT_PRIVATE_IP":22 -p 22 \
-  "${session_id}@host.bastion.${OCI_REGION}.oci.oraclecloud.com" &
-tunnel_pid=$!
-
 # The VM key is pinned separately, so the deployment authenticates the target.
 printf '[127.0.0.1]:2222 %s\n' "$BOT_SSH_HOST_KEY" > "$work/vm_known_hosts"
 ssh_opts=(-i "$work/vm_key" -p 2222 -o StrictHostKeyChecking=yes -o UserKnownHostsFile="$work/vm_known_hosts" -o BatchMode=yes -o ConnectTimeout=10)
-for attempt in {1..20}; do
-  if ssh "${ssh_opts[@]}" smebot-deploy@127.0.0.1 true 2>/dev/null; then break; fi
-  if (( attempt == 20 )); then echo 'Bastion tunnel or VM SSH did not become ready' >&2; exit 1; fi
+for attempt in {1..30}; do
+  # A newly ACTIVE OCI session can briefly reject its public key. Restart the
+  # tunnel on each attempt; retrying only the VM connection cannot repair a
+  # tunnel process that already exited with Permission denied (publickey).
+  ssh -i "$work/bastion_key" -o BatchMode=yes -o ConnectTimeout=10 \
+    -o StrictHostKeyChecking=accept-new \
+    -o UserKnownHostsFile="$work/bastion_known_hosts" \
+    -o ExitOnForwardFailure=yes -o ServerAliveInterval=30 \
+    -N -L 127.0.0.1:2222:"$BOT_PRIVATE_IP":22 -p 22 \
+    "${session_id}@host.bastion.${OCI_REGION}.oci.oraclecloud.com" &
+  tunnel_pid=$!
   sleep 3
+  if kill -0 "$tunnel_pid" 2>/dev/null && \
+     ssh "${ssh_opts[@]}" smebot-deploy@127.0.0.1 true 2>/dev/null; then
+    break
+  fi
+  kill "$tunnel_pid" 2>/dev/null || true
+  wait "$tunnel_pid" 2>/dev/null || true
+  tunnel_pid=
+  if (( attempt == 30 )); then
+    echo 'Bastion tunnel or VM SSH did not become ready' >&2
+    exit 1
+  fi
 done
 
 archive="$RUNNER_TEMP/${GITHUB_SHA}.tar.gz"
