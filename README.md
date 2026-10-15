@@ -147,13 +147,13 @@ The [deploy workflow](.github/workflows/deploy.yml) tests pull requests, then de
 One-time VM setup, from a trusted workstation that can SSH to the VM as `ubuntu`:
 
 1. Generate a separate deployment SSH key: `ssh-keygen -t ed25519 -N '' -f ~/.ssh/smebot-deploy -C smebot-deploy`. Keep its private half off Git.
-2. Copy `deploy/bootstrap_vm.sh`, `deploy/activate_release.sh`, `deploy/smebot.service`, and `~/.ssh/smebot-deploy.pub` to one directory on the VM. Run `sudo bash bootstrap_vm.sh /path/to/smebot-deploy.pub` there. This installs Python venv support and creates separate service and deployment users. For example, from this repository:
+2. Copy `deploy/bootstrap_vm.sh`, `deploy/activate_release.sh`, all `deploy/smebot*.service` and `deploy/smebot*.timer` units, and `~/.ssh/smebot-deploy.pub` to one directory on the VM. Run `sudo bash bootstrap_vm.sh /path/to/smebot-deploy.pub` there. This installs Python venv support, creates separate service and deployment users, and installs the health and export timers. For example, from this repository:
 
    ```sh
-   scp deploy/bootstrap_vm.sh deploy/activate_release.sh deploy/smebot.service ~/.ssh/smebot-deploy.pub ubuntu@<bot-public-ip>:/tmp/
+   scp deploy/bootstrap_vm.sh deploy/activate_release.sh deploy/smebot*.service deploy/smebot*.timer ~/.ssh/smebot-deploy.pub ubuntu@<bot-public-ip>:/tmp/
    ssh ubuntu@<bot-public-ip> 'sudo bash /tmp/bootstrap_vm.sh /tmp/smebot-deploy.pub'
    ```
-3. Put `tnsnames.ora` and `ewallet.pem` in `/etc/smebot/wallet`, owned by `root:smebot` with mode `0640`. Install [bot.env.example](deploy/bot.env.example) as `/etc/smebot/bot.env`, also owned by `root:smebot` with mode `0640`, after filling in the three Vault secret OCIDs. The file contains no token or passwords in Vault mode.
+3. Put `tnsnames.ora` and `ewallet.pem` in `/etc/smebot/wallet`, owned by `root:smebot` with mode `0640`. Install [bot.env.example](deploy/bot.env.example) as `/etc/smebot/bot.env`, also owned by `root:smebot` with mode `0640`, after filling in the three Vault secret OCIDs, the development compartment OCID, and bot instance OCID. The file contains no token or passwords in Vault mode.
 4. Apply the infrastructure repository's `environments/host/` Terraform stack. Its `smebot-dev-bot-runtime` dynamic group matches **only** the bot VM. Separate policies allow media operations on `smebot-dev-media` and reading only the three named runtime secret bundles. Allow several minutes for a new OCI policy to take effect. The bot uses its [instance principal](https://docs.oracle.com/en-us/iaas/Content/Identity/Tasks/callingservicesfrominstances.htm) for both services.
 
 ### Move an existing VM to OCI Vault
@@ -168,6 +168,12 @@ For an existing deployment, switch in stages:
 4. After a healthy Vault-backed restart, remove `BOT_TOKEN`, `DB_PASSWORD`, and `DB_WALLET_PASSWORD` from the VM file and restart once more. Retain a secure recovery copy outside the VM for a manual rollback to an older release, which cannot read Vault. Later secret rotations require a bot restart; coordinate database password rotation with Oracle and token rotation with BotFather.
 
 Local development continues using the ignored `.env` file and `SECRETS_SOURCE=env` (the default). GitHub deployment secrets are not used for these VM runtime credentials. Keep the mTLS wallet files on the VM; Vault stores the wallet **password**, not the wallet files.
+
+### Recovery exports and health checks
+
+The infrastructure repo creates `smebot-dev-recovery`, weekly boot-volume backup policies, and OCI health alarms before this release is deployed. The bot records an erasure marker there before `/deleteme` changes Oracle, so restoring an older daily export cannot reinstate erased profiles. If recovery storage is unavailable, erasure does not start and the user is asked to retry. Current live data is overwritten; exports have a seven-day lifecycle policy, and Oracle-managed backups currently retain copies for up to 60 days. The bot's privacy text explains this.
+
+After deployment, copy and install the four `smebot-export` and `smebot-health` systemd units from `deploy/` as root, run `systemctl daemon-reload`, and enable both timers with `systemctl enable --now smebot-export.timer smebot-health.timer`. Run `systemctl start smebot-export.service` once to establish the first export, then `systemctl start smebot-health.service` and inspect the unit journals and OCI metric streams. The export timer runs daily at 03:00 UTC; the health timer runs every five minutes. The health probe checks systemd, Telegram, Oracle, and export age, then publishes redacted metrics. The recovery runbook in the infrastructure repository covers database import, boot-volume restore, and periodic drills. Restore is an operator-only action against a **new, empty** database: point ignored local `.env` and `.setup.env` at that destination, then run `.venv/bin/python scripts/recovery.py restore exports/<selected>.manifest.json` from the laptop. Never run it against the live DB.
 
 Create a GitHub environment named `dev-bot`, restricted to deployments from `master`. Give it these secrets:
 

@@ -6,6 +6,7 @@ from telegram.ext import ConversationHandler
 from fakes import FakeMedia, FakeStore
 from handlers import (
     BotHandlers, CHOOSING, CLASS_STATE, PHONE, SME_DETAILS, PRODUCT_DETAILS,
+    CONFIRM_ERASE,
     PRODUCT_PHOTO, parse_business, parse_name_email, parse_product,
     parse_telegram_phone, clean_phone,
 )
@@ -63,6 +64,21 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
     async def register(self, user_id=42, phone="+1234567890"):
         await self.bot.choose(update(FakeMessage("Jane Doe, jane@example.com"), user_id), self.context)
         await self.bot.phone_text(update(FakeMessage(phone), user_id), self.context)
+
+    async def test_erasure_marker_failure_keeps_live_data(self):
+        await self.register()
+
+        class FailedLedger:
+            def record_erasure(self, user_id):
+                raise RuntimeError("recovery storage unavailable")
+
+        self.bot.erasures = FailedLedger()
+        message = FakeMessage()
+        result = await self.bot.confirm_erase(
+            update(query=FakeQuery("erase:yes", message)), self.context)
+        self.assertEqual(result, CONFIRM_ERASE)
+        self.assertIsNotNone(self.store.get_user(42))
+        self.assertIn("could not start", message.replies[0][1])
 
     async def test_seller_product_photo_and_repeat_start(self):
         first = FakeMessage()

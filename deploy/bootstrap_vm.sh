@@ -22,6 +22,9 @@ install -d -m 0700 -o smebot-deploy -g smebot-deploy /opt/smebot/.ssh
 install -m 0600 -o smebot-deploy -g smebot-deploy "$deploy_key" /opt/smebot/.ssh/authorized_keys
 install -m 0755 -o root -g root "$(dirname "$0")/activate_release.sh" /usr/local/sbin/smebot-activate
 install -m 0644 -o root -g root "$(dirname "$0")/smebot.service" /etc/systemd/system/smebot.service
+for unit in smebot-export.service smebot-export.timer smebot-health.service smebot-health.timer; do
+  install -m 0644 -o root -g root "$(dirname "$0")/$unit" "/etc/systemd/system/$unit"
+done
 
 cat >/etc/sudoers.d/smebot-deploy <<'EOF'
 smebot-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart smebot.service
@@ -30,4 +33,7 @@ chmod 0440 /etc/sudoers.d/smebot-deploy
 visudo -cf /etc/sudoers.d/smebot-deploy
 systemctl daemon-reload
 systemctl enable smebot.service
+if [[ -f /etc/smebot/bot.env ]]; then
+  systemctl enable --now smebot-export.timer smebot-health.timer
+fi
 echo 'Install /etc/smebot/bot.env and the two wallet files, then run the deployment workflow.'

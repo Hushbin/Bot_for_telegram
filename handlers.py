@@ -31,10 +31,13 @@ PRIVACY_NOTICE = (
     "the listing name, product names, descriptions, prices, stock and photos. "
     "Names used as listing names are public; emails, locations and phone numbers "
     "are not shown to other users.\n\n"
-    "How long: until you erase it. There is no automatic expiry.\n\n"
-    "Your controls: /mydata shows what is stored. /deleteme erases your personal "
-    "data, seller profile, products and photos; only your numeric Telegram ID and "
-    "the time of erasure are kept."
+    "How long: live data stays until you erase it. Daily recovery exports are "
+    "kept for seven days; OCI may take another day to finish deleting expired "
+    "objects. Oracle also retains managed database backups for up to 60 days.\n\n"
+    "Your controls: /mydata shows what is stored. /deleteme removes your personal "
+    "data, seller profile, products and photos from the live service. Backup "
+    "copies expire on the schedule above; a restore applies erasure records first. "
+    "Only your numeric Telegram ID and the time of erasure are kept afterward."
 )
 SELLER_NOTICE = (
     "Your listing name and products are visible to other users. The location, email "
@@ -251,9 +254,10 @@ def browse_buttons():
 
 
 class BotHandlers:
-    def __init__(self, store, media):
+    def __init__(self, store, media, erasures=None):
         self.store = store
         self.media = media
+        self.erasures = erasures
 
     async def run(self, operation, *args):
         return await asyncio.to_thread(operation, *args)
@@ -373,9 +377,11 @@ class BotHandlers:
             InlineKeyboardButton("No, keep my data", callback_data="erase:no"),
         ]])
         await update.effective_message.reply_text(
-            "This permanently erases your name, email and phone number, your seller "
-            "profile, your products and their photos. Only your numeric Telegram ID and "
-            "the time of erasure are kept. This cannot be undone. Continue?",
+            "This removes your name, email, phone, seller profile, products and "
+            "photos from the live service. Recovery exports expire after seven days "
+            "(OCI deletion may take another day); managed database backups can last "
+            "up to 60 days. A restore will honor this erasure. Only your numeric "
+            "Telegram ID and erasure time are kept. Continue?",
             reply_markup=buttons,
         )
         return CONFIRM_ERASE
@@ -386,6 +392,16 @@ class BotHandlers:
         if query.data != "erase:yes":
             await query.message.reply_text("Nothing was erased.")
             return ConversationHandler.END
+        if self.erasures is not None:
+            try:
+                await self.run(self.erasures.record_erasure, update.effective_user.id)
+            except Exception:
+                LOG.exception("Could not record durable erasure marker")
+                await query.message.reply_text(
+                    "Erasure could not start because recovery storage is unavailable. "
+                    "Please try again later."
+                )
+                return CONFIRM_ERASE
         try:
             photos = await self.run(self.store.erase_user, update.effective_user.id)
         except Exception:

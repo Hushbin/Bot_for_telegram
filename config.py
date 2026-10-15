@@ -23,6 +23,9 @@ class Settings:
     db_password: str = field(repr=False)
     oci_namespace: str
     oci_bucket_name: str
+    oci_recovery_bucket: str
+    oci_compartment_ocid: str
+    oci_instance_ocid: str
     oci_auth: str
     oci_config_file: str
     oci_profile: str
@@ -82,6 +85,9 @@ def load_settings() -> Settings:
         db_password=secrets["DB_PASSWORD"],
         oci_namespace=os.getenv("OCI_NAMESPACE", ""),
         oci_bucket_name=os.getenv("OCI_BUCKET_NAME", ""),
+        oci_recovery_bucket=os.getenv("OCI_RECOVERY_BUCKET", "smebot-dev-recovery"),
+        oci_compartment_ocid=os.getenv("OCI_COMPARTMENT_OCID", ""),
+        oci_instance_ocid=os.getenv("OCI_INSTANCE_OCID", ""),
         oci_auth=auth,
         oci_config_file=os.path.expanduser(os.getenv("OCI_CONFIG_FILE", "~/.oci/config")),
         oci_profile=os.getenv("OCI_PROFILE", "DEFAULT"),

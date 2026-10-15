@@ -95,10 +95,18 @@ def build_application(settings=None, store=None, media=None):
         else:
             from database import OracleStore
             from storage import MediaStorage
+            from recovery import RecoveryStorage
             store = store or OracleStore(settings)
             media = media or MediaStorage(settings)
+    erasures = None
+    if settings.backend == "oci":
+        from recovery import RecoveryStorage
+        erasures = RecoveryStorage(settings.oci_namespace, settings.oci_recovery_bucket,
+                                   auth=settings.oci_auth,
+                                   config_file=settings.oci_config_file,
+                                   profile=settings.oci_profile)
     store.check()
-    handlers = BotHandlers(store, media)
+    handlers = BotHandlers(store, media, erasures)
     application = (ApplicationBuilder().token(settings.bot_token)
                    .concurrent_updates(False).post_init(register_command_menu).build())
 

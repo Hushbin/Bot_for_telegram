@@ -1,0 +1,15 @@
+[Unit]
+Description=Probe SMEbot and publish OCI health metrics
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=smebot
+Group=smebot
+EnvironmentFile=/etc/smebot/bot.env
+WorkingDirectory=/opt/smebot/current
+ExecStart=/opt/smebot/current/.venv/bin/python scripts/recovery.py health
+PrivateTmp=true
+NoNewPrivileges=true
+

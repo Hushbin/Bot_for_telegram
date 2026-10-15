@@ -246,7 +246,7 @@ class JourneyTests(WiringTestCase):
         ):
             with self.subTest(action=action):
                 self.assertIn(expected, (await self.tap(15, f"menu:{action}"))[0][0])
-        self.assertIn("permanently erases", (await self.tap(15, "menu:deleteme"))[0][0])
+        self.assertIn("removes your name", (await self.tap(15, "menu:deleteme"))[0][0])
         self.assertIn("Nothing was erased", (await self.tap(15, "erase:no"))[0][0])
 
     async def test_native_command_menu_lists_every_command(self):
@@ -378,7 +378,7 @@ class PrivacyTests(WiringTestCase):
     async def test_deleteme_asks_for_confirmation_and_no_keeps_everything(self):
         await self.register(65, "customer")
         prompt = (await self.say(65, "/deleteme"))[0]
-        self.assertIn("permanently erases", prompt)
+        self.assertIn("removes your name", prompt)
         self.assertEqual(self.store.get_user(65)["full_name"], "Jane Doe")
         texts, answers = await self.tap(65, "erase:no")
         self.assertEqual(texts, ["Nothing was erased."])

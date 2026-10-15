@@ -1,0 +1,10 @@
+[Unit]
+Description=Five-minute SMEbot health probe
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Unit=smebot-health.service
+
+[Install]
+WantedBy=timers.target
