@@ -32,8 +32,8 @@ jobs:
     timeout-minutes: 45
     env:
       OCI_REGION: eu-zurich-1
-      BOT_COMPARTMENT_OCID: ${{ vars.BOT_COMPARTMENT_OCID }}
-      BOT_BASTION_SUBNET_OCID: ${{ vars.BOT_BASTION_SUBNET_OCID }}
+      BOT_BASTION_OCID: ${{ vars.BOT_BASTION_OCID }}
+      BOT_BASTION_IDLE_CIDR: ${{ vars.BOT_BASTION_IDLE_CIDR }}
       BOT_PRIVATE_IP: ${{ vars.BOT_PRIVATE_IP }}
       BOT_SSH_HOST_KEY: ${{ vars.BOT_SSH_HOST_KEY }}
       GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}

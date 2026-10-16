@@ -142,7 +142,7 @@ Run the tests with `.venv/bin/python -m unittest discover -s tests -v`. They nee
 2. Run `scripts/setup_db.py`.
 3. Merge to `master` so the workflow deploys the new release, which starts the service.
 
-The [deploy workflow](.github/workflows/deploy.yml) tests pull requests, then deploys each successful push to `master` (or a manual run on `master`). It builds wheels on Ubuntu 22.04/Python 3.10, opens a fresh OCI Bastion restricted to that runner's IP, copies a commit archive through an SSH tunnel, and activates a systemd release. CI never uploads `.env` or the database wallet. A failed service restart restores the previous release. Bastion and its session are deleted after each job.
+The [deploy workflow](.github/workflows/deploy.yml) tests pull requests, then deploys each successful push to `master` (or a manual run on `master`). It builds wheels on Ubuntu 22.04/Python 3.10, opens a temporary session on the Terraform-managed `smebotdevdeploy` Bastion restricted to that runner's IP, copies a commit archive through an SSH tunnel, and activates a systemd release. CI never uploads `.env` or the database wallet. A failed service restart restores the previous release. Deployments are serialized. Each job deletes its session and restores the approved administrator `/32` allowlist; the Bastion remains provisioned.
 
 One-time VM setup, from a trusted workstation that can SSH to the VM as `ubuntu`:
 
@@ -179,16 +179,18 @@ Create a GitHub environment named `dev-bot`, restricted to deployments from `mas
 
 | Secret | Purpose |
 | --- | --- |
-| `OCI_USER_OCID`, `OCI_TENANCY_OCID`, `OCI_FINGERPRINT`, `OCI_API_PRIVATE_KEY` | API key for an OCI IAM user allowed to manage Bastions and sessions in the dev compartment. Use a dedicated CI user. |
+| `OCI_USER_OCID`, `OCI_TENANCY_OCID`, `OCI_FINGERPRINT`, `OCI_API_PRIVATE_KEY` | API key for the dedicated CI user permitted to update/use only the deployment Bastion and create/read/delete deployment sessions. |
 | `BOT_DEPLOY_SSH_PRIVATE_KEY` | Private half of the separate deployment key from step 1. |
 
 Set these environment variables (GitHub **vars**):
 
 | Variable | Value |
 | --- | --- |
-| `BOT_COMPARTMENT_OCID` | `terraform -chdir=environments/host output -raw compartment_ocid` in the infrastructure repo. |
-| `BOT_BASTION_SUBNET_OCID` | `terraform -chdir=environments/host output -raw bot_bastion_subnet_ocid`. |
+| `BOT_BASTION_OCID` | `terraform -chdir=environments/host output -raw bot_bastion_ocid` in the infrastructure repo. |
+| `BOT_BASTION_IDLE_CIDR` | `terraform -chdir=environments/host output -raw bot_bastion_idle_cidr`; the approved administrator IPv4 `/32`. |
 | `BOT_PRIVATE_IP` | `terraform -chdir=environments/host output -raw bot_private_ip`. |
 | `BOT_SSH_HOST_KEY` | The VM's trusted SSH host public key, for example `ssh-ed25519 AAAA...`. Obtain it over your existing trusted SSH connection with `ssh ubuntu@<bot-public-ip> 'cat /etc/ssh/ssh_host_ed25519_key.pub'`. |
 
-The CI IAM user needs `manage bastion-family` in the development compartment. The target bot subnet permits SSH only from your workstation CIDR and the dedicated Bastion subnet. The workflow creates a Bastion with the current runner's `/32` allowlist and a one-hour session; it does not open SSH to all GitHub runner addresses. OCI [documents Bastion as free](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm), though the account's service limits still apply.
+The infrastructure repository manages the CI IAM policy and persistent Bastion. The deployment identity needs network read access and the tested Bastion/session permissions; network-management and Bastion create/delete grants are unnecessary. The Bastion subnet permits outbound TCP 22 only to the bot VM. The workflow changes the Bastion allowlist to the current runner's `/32` before creating a one-hour session. Its update permission also permits changing the Bastion's session lifetime; the script requires 3,600 seconds and Terraform owns that setting. OCI [documents Bastion as free](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm), though service limits still apply.
+
+If a runner is killed before cleanup, the next serialized deployment removes leftover `deploy<run-id>a<attempt>` sessions. Unknown session names block deployment for operator investigation. Cleanup failures fail the job and require checking session deletion and the idle allowlist; they do not revert a healthy release. Sessions expire after one hour. Changing the allowlist does not revoke existing sessions, so operators must explicitly delete a stranded session or wait for expiry. Keep this Bastion dedicated to the deployment workflow.
