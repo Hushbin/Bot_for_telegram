@@ -19,7 +19,7 @@ class BastionAccess:
         if network.prefixlen != 32:
             raise ValueError("BOT_BASTION_IDLE_CIDR must be an IPv4 /32")
         ipaddress.IPv4Address(target_ip)
-        if not re.fullmatch(r"ocid1\.bastion\.[a-z0-9.]+", bastion_id):
+        if not re.fullmatch(r"ocid1\.bastion\.oc1\.[a-z0-9-]+\.[a-z0-9]+", bastion_id):
             raise ValueError("BOT_BASTION_OCID must be a Bastion OCID")
         if not re.fullmatch(r"deploy[0-9]+a[0-9]+", session_name):
             raise ValueError("Invalid deployment session name")

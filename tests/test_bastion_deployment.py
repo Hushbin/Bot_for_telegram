@@ -64,7 +64,7 @@ class AccessTests(unittest.TestCase):
         self.access = self.make_access()
 
     def make_access(self, **kwargs):
-        return BastionAccess(self.client, 'ocid1.bastion.oc1.test.id', '198.51.100.1/32',
+        return BastionAccess(self.client, 'ocid1.bastion.oc1.eu-zurich-1.id', '198.51.100.1/32',
                              'deploy123a1', '10.20.0.133', sleep=self.sleep, clock=lambda: self.tick, **kwargs)
 
     def sleep(self, seconds):
@@ -73,7 +73,7 @@ class AccessTests(unittest.TestCase):
     def test_invalid_idle_or_target_configuration(self):
         for cidr in ['0.0.0.0/0', '198.51.100.0/24', '::1/128', 'invalid']:
             with self.subTest(cidr=cidr), self.assertRaises(ValueError):
-                BastionAccess(self.client, 'ocid1.bastion.oc1.test.id', cidr, 'deploy123a1', '10.20.0.133')
+                BastionAccess(self.client, 'ocid1.bastion.oc1.eu-zurich-1.id', cidr, 'deploy123a1', '10.20.0.133')
         with self.assertRaises(ValueError):
             self.access.prepare('999.1.1.1')
         self.assertEqual([], self.client.calls)
