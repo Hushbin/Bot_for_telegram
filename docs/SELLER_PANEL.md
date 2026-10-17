@@ -2,7 +2,8 @@
 
 The frontend lives in the private `Hushbin/smebot-seller` repository and runs on
 the former WordPress VM at https://144.24.232.0. The bot remains the backend.
-No new database tables or schema migration are required.
+The panel uses the bot's existing tables. The optional Telegram photo cache has an
+[additive bot schema migration](PHOTO_DELIVERY.md).
 
 Set `SELLER_PANEL_URL=https://144.24.232.0` in `/etc/smebot/bot.env` to enable it.
 `SELLER_API_PORT` defaults to 8081. The API listens on 127.0.0.1 only, within the
@@ -51,8 +52,8 @@ up to 5 MiB and requires the exact Origin plus the product's `photo_revision` in
 pixels. Images are oriented, resized to fit 2048×2048, and saved as JPEG with a
 white background for transparency; EXIF/GPS metadata is discarded.
 
-The upload uses the bot's existing media adapter and photo columns; no migration
-is needed. Attaching the photo locks the account/product and rejects a concurrent
+The upload uses the bot's existing media adapter and photo columns. Attaching the
+photo locks the account/product, clears any cached Telegram reference, and rejects a concurrent
 photo change. Failed attachment removes the new object; successful replacement
 removes the previous object/version. Cleanup failures are logged for operator
 follow-up. A pending Telegram upload cannot overwrite a panel photo.

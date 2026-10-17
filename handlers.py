@@ -5,6 +5,7 @@ import io
 import logging
 import re
 from decimal import Decimal, InvalidOperation
+from time import monotonic
 
 from telegram import (
     InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup,
@@ -13,6 +14,7 @@ from telegram import (
 from telegram.ext import ConversationHandler
 
 from catalog import CATEGORIES, DEFAULT_CURRENCY, MINOR_UNITS_PER_MAJOR, category_label
+from photo_delivery import ProductPhotoDelivery
 
 
 LOG = logging.getLogger(__name__)
@@ -882,6 +884,9 @@ class BotHandlers:
         except Exception:
             await self.failure(update)
             return PRODUCT_PHOTO
+        await ProductPhotoDelivery(self.store, self.media).remember(
+            dict(product_id=product_id, photo_object_key=key, photo_version_id=version_id),
+            context.bot.id, photo.file_id, getattr(update, 'update_id', None))
         context.user_data.pop("pending_product_id", None)
         context.user_data.pop("pending_product_number", None)
         label = (f"your product #{seller_number}" if seller_number
@@ -971,7 +976,9 @@ class BotHandlers:
     async def product(self, update, context):
         try:
             product_id = parse_catalog_id(context.args[0])
+            lookup_started = monotonic()
             product = await self.run(self.store.get_product, product_id)
+            lookup_ms = (monotonic() - lookup_started) * 1000
         except (IndexError, ValueError):
             await update.effective_message.reply_text(
                 "Use /product <catalog ID>, for example /product 1 or /product #1."
@@ -983,20 +990,27 @@ class BotHandlers:
         if not product:
             await update.effective_message.reply_text("Product not found.")
             return
-        caption = product_text(
-            product, detail=True,
-            seller_view=product["seller_telegram_user_id"] == update.effective_user.id,
-        )
-        buttons = self.order_handlers.product_buttons(product, update.effective_user.id)
-        options = {"reply_markup": buttons} if buttons else {}
+        def details(current):
+            caption = product_text(
+                current, detail=True,
+                seller_view=current["seller_telegram_user_id"] == update.effective_user.id,
+            )
+            buttons = self.order_handlers.product_buttons(current, update.effective_user.id)
+            return caption, {"reply_markup": buttons} if buttons else {}
+
         if not product["photo_object_key"]:
+            caption, options = details(product)
             await update.effective_message.reply_text(caption, **options)
             return
         try:
-            raw = await self.run(self.media.get_photo, product["photo_object_key"])
-            await update.effective_message.reply_photo(photo=io.BytesIO(raw), caption=caption, **options)
-        except Exception:
-            await self.failure(update)
+            await ProductPhotoDelivery(self.store, self.media).send(
+                update, context.bot.id, product, details, lookup_ms=lookup_ms)
+        except Exception as exc:
+            # Avoid logging Telegram errors that might include a photo reference.
+            LOG.warning('Product photo failed update_id=%s product_id=%s error_type=%s',
+                        getattr(update, 'update_id', None), product_id, type(exc).__name__)
+            await update.effective_message.reply_text(
+                "The service is unavailable. Please try again later.")
 
     async def view_product(self, update, context):
         await self.hide_phone_keyboard(update, context)

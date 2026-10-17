@@ -43,6 +43,8 @@ CREATE TABLE products (
     stock_quantity NUMBER(10) NOT NULL CHECK (stock_quantity >= 0),
     photo_object_key VARCHAR2(512 CHAR),
     photo_version_id VARCHAR2(128 CHAR),
+    telegram_photo_file_id VARCHAR2(1024 CHAR),
+    telegram_photo_bot_id NUMBER(19),
     deleted_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL,
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT SYSTIMESTAMP NOT NULL

@@ -4,6 +4,31 @@ from orders import OrderError
 
 
 class SellerStoreMixin:
+    def cache_product_photo(self, pid, object_key, version_id, bot_id, file_id):
+        """A late Telegram send may only cache the exact photo it uploaded."""
+        with self.order_transaction(True) as db:
+            return db.execute(
+                f"UPDATE {db.table('products')} SET telegram_photo_file_id = :file_id, "
+                "telegram_photo_bot_id = :bot_id WHERE product_id = :pid "
+                "AND deleted_at IS NULL AND photo_object_key = :object_key "
+                "AND (photo_version_id = :version_id OR "
+                "(photo_version_id IS NULL AND :version_id IS NULL))",
+                pid=pid, object_key=object_key, version_id=version_id,
+                bot_id=bot_id, file_id=file_id) == 1
+
+    def clear_product_photo_cache(self, pid, object_key, version_id, bot_id, file_id):
+        """Do not clear a newer reference or a concurrently replaced photo."""
+        with self.order_transaction(True) as db:
+            return db.execute(
+                f"UPDATE {db.table('products')} SET telegram_photo_file_id = NULL, "
+                "telegram_photo_bot_id = NULL WHERE product_id = :pid "
+                "AND deleted_at IS NULL AND photo_object_key = :object_key "
+                "AND (photo_version_id = :version_id OR "
+                "(photo_version_id IS NULL AND :version_id IS NULL)) "
+                "AND telegram_photo_bot_id = :bot_id AND telegram_photo_file_id = :file_id",
+                pid=pid, object_key=object_key, version_id=version_id,
+                bot_id=bot_id, file_id=file_id) == 1
+
     def replace_seller_product_photo(self, uid, pid, object_key, version_id, expected_key):
         """Attach an uploaded photo only if the live account/product still matches."""
         with self.order_transaction(True) as db:
@@ -16,7 +41,8 @@ class SellerStoreMixin:
             if product['photo_object_key'] != expected_key:
                 raise OrderError('conflict', 'The photo changed. Reopen the product before uploading again.')
             db.execute(f"UPDATE {db.table('products')} SET photo_object_key = :object_key, "
-                       'photo_version_id = :version_id WHERE product_id = :pid',
+                       'photo_version_id = :version_id, telegram_photo_file_id = NULL, '
+                       'telegram_photo_bot_id = NULL WHERE product_id = :pid',
                        object_key=object_key, version_id=version_id, pid=pid)
             return product['photo_object_key'], product['photo_version_id']
 
@@ -78,7 +104,8 @@ class SellerStoreMixin:
                               "WHERE product_id = :pid AND status = 'ACCEPTED'", pid=pid)
             if accepted['count']:
                 raise OrderError('conflict', 'Complete or cancel accepted orders before removing this product.')
-            db.execute(f"UPDATE {db.table('products')} SET deleted_at = :now WHERE product_id = :pid",
+            db.execute(f"UPDATE {db.table('products')} SET deleted_at = :now, "
+                       "telegram_photo_file_id = NULL, telegram_photo_bot_id = NULL WHERE product_id = :pid",
                        now=self._order_now(db), pid=pid)
 
     def save_seller_profile(self, uid, values):

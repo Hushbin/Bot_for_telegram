@@ -43,6 +43,8 @@ CREATE TABLE IF NOT EXISTS products (
     stock_quantity INTEGER NOT NULL CHECK (stock_quantity >= 0),
     photo_object_key TEXT,
     photo_version_id TEXT,
+    telegram_photo_file_id TEXT,
+    telegram_photo_bot_id INTEGER,
     deleted_at TEXT
 );
 CREATE INDEX IF NOT EXISTS products_category_idx ON products(category, product_id);
@@ -57,6 +59,8 @@ COLUMN_MIGRATIONS = (
     ("sellers", "deleted_at", "TEXT"),
     ("products", "deleted_at", "TEXT"),
     ("products", "photo_version_id", "TEXT"),
+    ("products", "telegram_photo_file_id", "TEXT"),
+    ("products", "telegram_photo_bot_id", "INTEGER"),
     ("products", "currency", "TEXT NOT NULL DEFAULT 'USD'"),
 )
 
@@ -130,6 +134,8 @@ class SQLiteStore(SellerStoreMixin, OrderStoreMixin):
     def check(self):
         with self.connect() as connection:
             connection.execute("SELECT COUNT(*) FROM users").fetchone()
+            connection.execute("SELECT telegram_photo_file_id, telegram_photo_bot_id, "
+                               "photo_version_id FROM products WHERE 1 = 0")
             for table, columns in ORDER_TABLE_COLUMNS.items():
                 connection.execute(f"SELECT {', '.join(columns)} FROM {table} WHERE 1 = 0")
 
@@ -235,7 +241,8 @@ class SQLiteStore(SellerStoreMixin, OrderStoreMixin):
     def set_product_photo(self, seller_id, product_id, object_key, version_id=None):
         with self.connect() as connection:
             cursor = connection.execute("""
-                UPDATE products SET photo_object_key = ?, photo_version_id = ?
+                UPDATE products SET photo_object_key = ?, photo_version_id = ?,
+                       telegram_photo_file_id = NULL, telegram_photo_bot_id = NULL
                 WHERE product_id = ? AND seller_telegram_user_id = ?
                   AND deleted_at IS NULL
                   AND photo_object_key IS NULL
@@ -261,7 +268,8 @@ class SQLiteStore(SellerStoreMixin, OrderStoreMixin):
     def get_product(self, product_id):
         with self.connect() as connection:
             row = connection.execute(f"""
-                SELECT {PRODUCT_COLUMNS} FROM products p
+                SELECT {PRODUCT_COLUMNS}, p.photo_version_id,
+                       p.telegram_photo_file_id, p.telegram_photo_bot_id FROM products p
                 JOIN sellers s ON s.telegram_user_id = p.seller_telegram_user_id
                 WHERE p.product_id = ? AND p.deleted_at IS NULL
             """, (product_id,)).fetchone()
@@ -342,6 +350,7 @@ class SQLiteStore(SellerStoreMixin, OrderStoreMixin):
             connection.execute("""
                 UPDATE products SET name = ?, description = NULL, stock_quantity = 0,
                        photo_object_key = NULL, photo_version_id = NULL,
+                       telegram_photo_file_id = NULL, telegram_photo_bot_id = NULL,
                        deleted_at = COALESCE(deleted_at, CURRENT_TIMESTAMP)
                 WHERE seller_telegram_user_id = ?
             """, (ERASED, telegram_user_id))

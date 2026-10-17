@@ -22,8 +22,9 @@ class FakeMessage:
     async def reply_text(self, text, **kwargs):
         self.replies.append(("text", text))
 
-    async def reply_photo(self, photo, caption):
-        self.replies.append(("photo", photo.read(), caption))
+    async def reply_photo(self, photo, caption, **kwargs):
+        self.replies.append(("photo", photo if isinstance(photo, str) else photo.read(), caption))
+        return SimpleNamespace(photo=[FakePhoto()])
 
 
 class FakeQuery:
@@ -38,6 +39,8 @@ class FakeQuery:
 
 class FakePhoto:
     file_size = 4
+    file_id = "telegram-photo"
+    width = height = 100
 
     async def get_file(self):
         return self
@@ -59,7 +62,7 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
         self.store = FakeStore()
         self.media = FakeMedia()
         self.bot = BotHandlers(self.store, self.media)
-        self.context = SimpleNamespace(user_data={}, args=[])
+        self.context = SimpleNamespace(user_data={}, args=[], bot=SimpleNamespace(id=1))
 
     async def register(self, user_id=42, phone="+1234567890"):
         await self.bot.choose(update(FakeMessage("Jane Doe, jane@example.com"), user_id), self.context)

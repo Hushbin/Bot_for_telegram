@@ -105,6 +105,75 @@ class StoreContract:
 
     # -- products ------------------------------------------------------------
 
+    def test_photo_cache_matches_key_and_version_and_clear_matches_reference(self):
+        self.register(seller=True)
+        pid = self.product()
+        self.store.set_product_photo(self.uid, pid, 'original.jpg', 'v1')
+        self.assertFalse(self.store.cache_product_photo(pid, 'wrong.jpg', 'v1', 7, 'old'))
+        self.assertFalse(self.store.cache_product_photo(pid, 'original.jpg', 'wrong', 7, 'old'))
+        self.assertTrue(self.store.cache_product_photo(pid, 'original.jpg', 'v1', 7, 'first'))
+        self.assertTrue(self.store.cache_product_photo(pid, 'original.jpg', 'v1', 7, 'second'))
+        self.assertFalse(self.store.clear_product_photo_cache(pid, 'original.jpg', 'v1', 7, 'first'))
+        self.assertFalse(self.store.clear_product_photo_cache(pid, 'original.jpg', 'v1', 8, 'second'))
+        self.assertTrue(self.store.clear_product_photo_cache(pid, 'original.jpg', 'v1', 7, 'second'))
+        product = self.store.get_product(pid)
+        self.assertIsNone(product['telegram_photo_file_id'])
+        self.assertIsNone(product['telegram_photo_bot_id'])
+
+    def test_versionless_photo_cache_is_supported(self):
+        self.register(seller=True)
+        pid = self.product()
+        self.store.set_product_photo(self.uid, pid, 'legacy.jpg')
+        self.assertTrue(self.store.cache_product_photo(pid, 'legacy.jpg', None, 7, 'legacy-ref'))
+        self.assertTrue(self.store.clear_product_photo_cache(pid, 'legacy.jpg', None, 7, 'legacy-ref'))
+
+    def test_replacement_and_removal_invalidate_cache_and_prevent_late_writes(self):
+        self.register(seller=True)
+        pid = self.product()
+        self.store.set_product_photo(self.uid, pid, 'photo.jpg', 'v1')
+        self.store.cache_product_photo(pid, 'photo.jpg', 'v1', 7, 'first')
+        self.store.replace_seller_product_photo(self.uid, pid, 'photo.jpg', 'v2', 'photo.jpg')
+        product = self.store.get_product(pid)
+        self.assertEqual(product['photo_version_id'], 'v2')
+        self.assertIsNone(product['telegram_photo_file_id'])
+        self.assertIsNone(product['telegram_photo_bot_id'])
+        self.assertFalse(self.store.cache_product_photo(pid, 'photo.jpg', 'v1', 7, 'late'))
+        self.assertTrue(self.store.cache_product_photo(pid, 'photo.jpg', 'v2', 7, 'replacement'))
+        self.assertFalse(self.store.clear_product_photo_cache(pid, 'photo.jpg', 'v1', 7, 'first'))
+        self.store.remove_seller_product(self.uid, pid)
+        self.assertFalse(self.store.cache_product_photo(pid, 'photo.jpg', 'v2', 7, 'late'))
+        with self.store.order_transaction() as db:
+            row = self.store._product(db, pid)
+            self.assertIsNone(row['telegram_photo_file_id'])
+            self.assertIsNone(row['telegram_photo_bot_id'])
+
+    def test_erasure_clears_cache_including_removed_products(self):
+        self.register(seller=True)
+        pid = self.product()
+        self.store.set_product_photo(self.uid, pid, 'photo.jpg', 'v1')
+        self.store.cache_product_photo(pid, 'photo.jpg', 'v1', 7, 'first')
+        self.store.erase_user(self.uid)
+        self.assertFalse(self.store.cache_product_photo(pid, 'photo.jpg', 'v1', 7, 'late'))
+        with self.store.order_transaction() as db:
+            row = self.store._product(db, pid)
+            self.assertIsNone(row['telegram_photo_file_id'])
+            self.assertIsNone(row['telegram_photo_bot_id'])
+
+    def test_seller_and_recovery_exports_exclude_telegram_cache(self):
+        from seller_api import panel_state
+        from recovery import TABLE_COLUMNS, LEGACY_TABLE_COLUMNS
+        self.register(seller=True)
+        pid = self.product()
+        self.store.set_product_photo(self.uid, pid, 'photo.jpg', 'v1')
+        self.store.cache_product_photo(pid, 'photo.jpg', 'v1', 7, 'private-reference')
+        import json
+        payload = json.dumps(panel_state(self.store.seller_snapshot(self.uid), True))
+        for private in ('telegram_photo_file_id', 'telegram_photo_bot_id', 'private-reference'):
+            self.assertNotIn(private, payload)
+        for columns in (TABLE_COLUMNS, LEGACY_TABLE_COLUMNS):
+            self.assertNotIn('telegram_photo_file_id', columns['PRODUCTS'])
+            self.assertNotIn('telegram_photo_bot_id', columns['PRODUCTS'])
+
     def test_product_needs_a_seller(self):
         self.register()
         with self.assertRaises(Exception):

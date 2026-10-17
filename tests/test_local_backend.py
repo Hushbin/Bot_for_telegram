@@ -112,6 +112,8 @@ class LocalBackendTests(unittest.TestCase):
             self.assertEqual((user["full_name"], user["phone_verified"]), ("Old User", False))
             self.assertEqual(user["preferred_category"], "clothing")
             product = store.get_product(1)
+            self.assertIsNone(product['telegram_photo_file_id'])
+            self.assertIsNone(product['telegram_photo_bot_id'])
             self.assertEqual((product["name"], product["category"]), ("Old product", "art"))
             self.assertEqual((product["price_minor"], product["currency"]), (500, "USD"))
             # A value that is not one of the old labels is left exactly as it was.

@@ -177,6 +177,33 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.get(product['photo_url'])).status_code, 401)
         self.assertEqual((await self.upload()).status_code, 401)
 
+    async def test_panel_photo_caches_on_first_telegram_view_and_replacement_clears_it(self):
+        from types import SimpleNamespace
+        from unittest.mock import AsyncMock
+        from handlers import BotHandlers
+        self.assertEqual((await self.upload()).status_code, 200)
+        self.assertIsNone(self.store.get_product(self.pid)['telegram_photo_file_id'])
+        message = SimpleNamespace(reply_text=AsyncMock(), reply_photo=AsyncMock(
+            return_value=SimpleNamespace(photo=[SimpleNamespace(
+                width=32, height=24, file_id='telegram-reference')])))
+        update = SimpleNamespace(update_id=12, effective_message=message,
+                                 effective_user=SimpleNamespace(id=1))
+        context = SimpleNamespace(args=[str(self.pid)], bot=SimpleNamespace(id=7))
+        handler = BotHandlers(self.store, self.media)
+        with patch.object(self.media, 'get_photo', wraps=self.media.get_photo) as download:
+            await handler.product(update, context)
+            await handler.product(update, context)
+            download.assert_called_once()
+        self.assertIsInstance(message.reply_photo.call_args_list[0].kwargs['photo'], io.BytesIO)
+        self.assertEqual(message.reply_photo.call_args_list[1].kwargs['photo'], 'telegram-reference')
+        state = (await self.client.get('/api/state')).text
+        self.assertNotIn('telegram-reference', state)
+        self.assertNotIn('telegram_photo_', state)
+        revision = (await self.client.get('/api/state')).json()['products'][0]['photo_revision']
+        self.assertEqual((await self.upload(revision=revision)).status_code, 200)
+        self.assertIsNone(self.store.get_product(self.pid)['telegram_photo_file_id'])
+        self.assertIsNone(self.store.get_product(self.pid)['telegram_photo_bot_id'])
+
     async def test_replace_cleans_old_version_and_rejects_stale_upload(self):
         first = await self.upload()
         revision = first.json()['products'][0]['photo_revision']

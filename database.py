@@ -13,7 +13,8 @@ ERASED = "[deleted]"
 REQUIRED_COLUMNS = {
     "USERS": ("telegram_user_id", "phone_verified", "deleted_at"),
     "SELLERS": ("telegram_user_id", "deleted_at"),
-    "PRODUCTS": ("product_id", "deleted_at", "photo_version_id", "price_minor", "currency"),
+    "PRODUCTS": ("product_id", "deleted_at", "photo_version_id", "price_minor", "currency",
+                 "telegram_photo_file_id", "telegram_photo_bot_id"),
     **ORDER_TABLE_COLUMNS,
 }
 
@@ -208,7 +209,8 @@ class OracleStore(SellerStoreMixin, OrderStoreMixin):
             with connection.cursor() as cursor:
                 cursor.execute(f"""
                     UPDATE {self.schema}.PRODUCTS SET photo_object_key = :object_key,
-                           photo_version_id = :version_id, updated_at = SYSTIMESTAMP
+                           photo_version_id = :version_id, telegram_photo_file_id = NULL,
+                           telegram_photo_bot_id = NULL, updated_at = SYSTIMESTAMP
                     WHERE product_id = :product_id
                       AND seller_telegram_user_id = :seller_id
                       AND deleted_at IS NULL
@@ -248,7 +250,8 @@ class OracleStore(SellerStoreMixin, OrderStoreMixin):
                               AND earlier.product_id <= p.product_id) AS seller_number,
                            p.name,
                            p.category, p.description, p.price_minor, p.currency,
-                           p.stock_quantity, p.photo_object_key, s.business_name
+                           p.stock_quantity, p.photo_object_key, p.photo_version_id,
+                           p.telegram_photo_file_id, p.telegram_photo_bot_id, s.business_name
                     FROM {self.schema}.PRODUCTS p JOIN {self.schema}.SELLERS s
                       ON p.seller_telegram_user_id = s.telegram_user_id
                     WHERE p.product_id = :id AND p.deleted_at IS NULL
@@ -355,7 +358,8 @@ class OracleStore(SellerStoreMixin, OrderStoreMixin):
                 cursor.execute(f"""
                     UPDATE {self.schema}.PRODUCTS SET name = :erased, description = NULL,
                            stock_quantity = 0, photo_object_key = NULL,
-                           photo_version_id = NULL,
+                           photo_version_id = NULL, telegram_photo_file_id = NULL,
+                           telegram_photo_bot_id = NULL,
                            deleted_at = COALESCE(deleted_at, SYSTIMESTAMP),
                            updated_at = SYSTIMESTAMP
                     WHERE seller_telegram_user_id = :id
