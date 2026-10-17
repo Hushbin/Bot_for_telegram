@@ -1,24 +1,5 @@
 # Ordering validation
 
-## Previous implementation run
-
-The previous run completed 288 tests with no failures or skips on Python 3.12.14,
-including 56 Oracle-specific store, inventory-race, and worker tests. It used a
-disposable local Oracle Database Free 23 container, image `gvenzl/oracle-free:23-slim`,
-digest `sha256:6d61d267a3b978c24c5ac1790e62e927416a0aec446bd86e4b3a1527562757bd`.
-
-That run also checked actual Oracle fresh installation, repeat installation,
-three-to-five-table migration preserving fixture data, runtime DML grants,
-format-1 and format-2 restore, erasure reconciliation, and identity reseeding.
-The small migrated fixture occupied 1.13 MB under a 20 MB schema quota.
-
-## Workspace recovery
-
-The workspace returned to the published initial checkout and lost the uncommitted
-ordering files. The implementation and tests were reconstructed from the saved
-conversation and committed on `codex/ordering-recovery`. Upstream deployment
-updates are retained. This reconstruction is not a byte-for-byte recovery.
-
 ## Verified checks: 17 October 2026
 
 The reconstructed implementation was checked against Oracle **19.33.0.1.0**,

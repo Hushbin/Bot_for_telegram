@@ -4,6 +4,16 @@
 
 `main.py` builds the Telegram application; `handlers.py` implements conversations and commands. `config.py` loads settings, while `database.py` and `storage.py` provide OCI persistence. `local_backend.py` uses SQLite and files for offline development. Database schema and setup live in `db/schema.sql` and `scripts/`; VM deployment files are in `deploy/`. Tests live in `tests/test_*.py`, with shared fakes in `tests/fakes.py`. Keep runtime data in ignored `.local/` and credentials out of Git.
 
+## Documentation
+
+Keep `README.md` and `AGENTS.md` at the repository root. Put other maintained
+Markdown documentation in `docs/` and link it from `docs/README.md`. When moving
+or removing a document, update references and preserve still-relevant decisions
+or unresolved findings in the current guides. Remove completed plans and
+superseded drafts rather than leaving conflicting instructions; Git preserves
+history. Keep validation records dated and distinguish automated checks from
+manual checks that have not been performed.
+
 ## Build, Test, and Development Commands
 
 Use Python 3.10 or newer. From the repository root:

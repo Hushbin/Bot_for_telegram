@@ -1,6 +1,10 @@
 # SMEbot development app
 
-Telegram bot backed by the existing OCI development Autonomous JSON Database and private `smebot-dev-media` Object Storage bucket. This is a clean start: it does not import FaunaDB records or Cloudinary assets. The old `Updating_plan.md` remains historical context.
+Telegram bot backed by the existing OCI development Autonomous JSON Database and private `smebot-dev-media` Object Storage bucket. This is a clean start: it does not import FaunaDB records or Cloudinary assets. Legacy source data remains outside this migration scope; this does not assert that the old services are empty.
+
+## Documentation
+
+See [docs/README.md](docs/README.md) for ordering, validation results and remaining improvements. Setup and deployment instructions are below.
 
 ## Data model
 
@@ -9,11 +13,10 @@ Telegram bot backed by the existing OCI development Autonomous JSON Database and
 | `SME_SCHEMA.USERS` | One profile per Telegram user | Telegram user ID, name, email, phone and whether Telegram verified it, role, preferred category, erasure time |
 | `SME_SCHEMA.SELLERS` | Listing profile for a registered seller | Listing name, seller contact email and phone, location, erasure time |
 | `SME_SCHEMA.PRODUCTS` | Seller catalog and stock | Global catalog ID, category key, price in minor units (cents) and currency, quantity, optional private photo object key and its version ID, erasure time |
-
 | `SME_SCHEMA.ORDERS` | Confirmed buyer requests | Participants, immutable price/contact snapshots, consent, status/version and expiry |
 | `SME_SCHEMA.ORDER_NOTIFICATIONS` | Durable seller and buyer alerts | Event version, recipient, retry schedule, delivery lease and outcome |
 
-Ordering is disabled by default (`ORDERS_ENABLED=false`). See [ORDERING.md](ORDERING.md) for buyer/seller flows, migration and rollout. Pending orders reserve no stock; seller acceptance deducts stock atomically. Payment and fulfillment are arranged directly. Product photos stay in Object Storage; the database stores only their private object keys. Customer preference is one column because the current UI chooses one category. A Telegram user ID, rather than a chat ID or a temporary Fauna record ID, identifies a profile across restarts.
+Ordering is disabled by default (`ORDERS_ENABLED=false`). See [ordering guide](docs/ORDERING.md) for buyer/seller flows, migration and rollout. Pending orders reserve no stock; seller acceptance deducts stock atomically. Payment and fulfillment are arranged directly. Product photos stay in Object Storage; the database stores only their private object keys. Customer preference is one column because the current UI chooses one category. A Telegram user ID, rather than a chat ID or a temporary Fauna record ID, identifies a profile across restarts.
 
 The database's `product_id` identifies a product globally for buyers. Sellers also see a stable number within their own catalog, starting at `#1`; previous listings, including erased ones, keep their place so numbers are never reassigned. This number is derived from existing product rows, so it needs no schema migration.
 
@@ -47,7 +50,7 @@ What the bot stores, who sees it, and for how long. New users see the privacy no
 
 ### Run without OCI
 
-The local backend uses SQLite for profiles, sellers, and products, and files for
+The local backend uses SQLite for profiles, sellers, products, orders and notifications, and files for
 photos. It creates `.local/bot.sqlite3` and `.local/media/` automatically; both
 are ignored by Git. No OCI account, wallet, database, or bucket is needed.
 You still need a Telegram bot token and internet access to Telegram because the
@@ -125,7 +128,7 @@ Registration takes the name and email as `Jane Doe, jane@example.com` (the name 
 
 For example, if your first listing has catalog ID `#3`, you see `Your product #1 (catalog ID #3)`. Use `/stock 1 5` or `/photo 1` for your own listing; buyers use `/product 3` or `/product #3`. When the bot asks for a catalog ID, replying `3` or `#3` works. `/stock G3 5` and `/photo G3` also accept the global catalog ID explicitly.
 
-The bot uses polling on both local and VM deployments. It needs a real Telegram token to run; no token is present in this checkout. The bucket is versioned: future photo bytes and retained versions count against the [Always Free Object Storage allowance](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm).
+The bot uses polling on both local and VM deployments. It needs a real Telegram token to run; keep it in ignored local configuration or OCI Vault. The bucket is versioned: future photo bytes and retained versions count against the [Always Free Object Storage allowance](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm).
 
 ## Dependencies and tests
 
@@ -137,17 +140,13 @@ uv pip compile requirements.in --universal --generate-hashes --python-version 3.
 
 The lock is universal (Python 3.10 and newer, any platform). Install it with `pip`, as shown above. On a very new Python release, a pinned package without a prebuilt wheel is built from source and needs a compiler.
 
-Run the tests with `.venv/bin/python -m unittest discover -s tests -v`. They need no credentials or network. `tests/test_wiring.py` drives the real Telegram handler wiring; `tests/test_store_contract.py` runs one behavioural contract against the in-memory fake and SQLite stores. The same contract runs against Oracle when `ORACLE_TEST_*` variables point at a **throwaway** database (see the file's docstring); those tests are skipped otherwise and have not been run against the development database.
+Run the tests with `.venv/bin/python -m unittest discover -s tests -v`. They need no credentials or network. `tests/test_wiring.py` drives the real Telegram handler wiring; `tests/test_store_contract.py` runs one behavioural contract against the in-memory fake and SQLite stores. The same contract runs against Oracle when `ORACLE_TEST_*` variables point at a **throwaway** database (see the file's docstring); those tests are skipped otherwise. The [validation record](docs/ORDERING_VALIDATION.md) documents the completed Oracle checks using isolated disposable schemas, without using live application data as fixtures.
 
 ## Deploy to the OCI bot VM
 
 **Before merging a release that adds database columns, run `scripts/setup_db.py` against the database** (see above). The bot refuses to start on an outdated schema, so a deploy made first would roll back, but nothing is damaged either way.
 
-**The `price_kobo` to `price_minor` release is not backward compatible.** After `setup_db.py` renames the column, the previously deployed release can no longer read products, and the new release cannot start before the rename. To avoid a broken bot in between, stop the service first, then migrate, then deploy:
-
-1. `sudo systemctl stop smebot` on the VM (optional for a development bot nobody is using; otherwise product commands fail from step 2 until step 3 finishes).
-2. Run `scripts/setup_db.py`.
-3. Merge to `master` so the workflow deploys the new release, which starts the service.
+For ordering changes, use the maintenance, backup and staged enablement procedure in the [ordering guide](docs/ORDERING.md#enable-after-migration). Schema changes may not be compatible with the previous release; review rollback compatibility before migrating.
 
 The [deploy workflow](.github/workflows/deploy.yml) tests pull requests, then deploys each successful push to `master` (or a manual run on `master`). It builds wheels on Ubuntu 22.04/Python 3.10, opens a temporary session on the Terraform-managed `smebotdevdeploy` Bastion restricted to that runner's IP, copies a commit archive through an SSH tunnel, and activates a systemd release. CI never uploads `.env` or the database wallet. A failed service restart restores the previous release. Deployments are serialized. Each job deletes its session and restores the approved administrator `/32` allowlist; the Bastion remains provisioned.
 
