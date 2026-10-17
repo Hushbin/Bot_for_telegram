@@ -11,7 +11,7 @@ SCHEMA = "SME_SCHEMA"
 ERASED = "[deleted]"
 # Columns added after the first release; keep in step with scripts/setup_db.py.
 REQUIRED_COLUMNS = {
-    "USERS": ("telegram_user_id", "phone_verified", "deleted_at"),
+    "USERS": ("telegram_user_id", "phone_verified", "deleted_at", "auth_generation"),
     "SELLERS": ("telegram_user_id", "deleted_at"),
     "PRODUCTS": ("product_id", "deleted_at", "photo_version_id", "price_minor", "currency",
                  "telegram_photo_file_id", "telegram_photo_bot_id"),
@@ -329,7 +329,8 @@ class OracleStore(SellerStoreMixin, OrderStoreMixin):
                     UPDATE {self.schema}.USERS SET full_name = :erased_name,
                            email = :erased_email, phone = :erased_phone,
                            phone_verified = 0, role = 'CUSTOMER',
-                           preferred_category = NULL, deleted_at = SYSTIMESTAMP,
+                           preferred_category = NULL, auth_generation = auth_generation + 1,
+                           deleted_at = SYSTIMESTAMP,
                            updated_at = SYSTIMESTAMP
                     WHERE telegram_user_id = :id AND deleted_at IS NULL
                 """, erased_name=ERASED, erased_email=ERASED, erased_phone=ERASED,

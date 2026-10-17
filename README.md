@@ -26,6 +26,10 @@ The database's `product_id` identifies a product globally for buyers. Sellers al
 
 `scripts/setup_db.py` creates the `SME_SCHEMA` owner and `SME_BOT` runtime user. The owner has a 20 MB quota and DDL privileges for these tables; the runtime user has only `CREATE SESSION` plus `SELECT`, `INSERT`, and `UPDATE` on the five tables. It has no schema creation, deletion, or ADMIN privileges. The script is rerunnable and skips existing tables and indexes. It also brings an existing database up to date: it adds any column listed in `COLUMN_MIGRATIONS` that a table lacks, renames the columns listed in `COLUMN_RENAMES` (`price_kobo` to `price_minor`), and converts old category labels to keys. Every step checks first, so rerunning it changes nothing. It does **not** rotate existing user passwords, drop columns, or retype columns, and there is no automatic way back: to undo the rename, run `ALTER TABLE products RENAME COLUMN price_minor TO price_kobo` as the schema owner (the category keys would then show as plain text in the old release). The bot checks for the columns it needs at startup and refuses to start with a pointer to this script if they are missing, so **run `scripts/setup_db.py` against the database before deploying a release that adds columns**; otherwise the deploy rolls itself back.
 
+Seller-panel authentication also requires the additive `USERS.AUTH_GENERATION`
+migration. See [seller-panel rollout](docs/SELLER_PANEL.md#authentication-generation-migration-and-rollout)
+for erasure invalidation, recovery compatibility and rollback instructions.
+
 ## Personal data
 
 What the bot stores, who sees it, and for how long. New users see the privacy notice after choosing Seller or Buyer; `/privacy` shows it again (`PRIVACY_NOTICE` in `handlers.py`).

@@ -8,7 +8,9 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from local_backend import SQLiteStore
-from recovery import RecoveryStorage, TABLE_COLUMNS, export_database, restore_database
+from recovery import RecoveryStorage, TABLE_COLUMNS, LEGACY_TABLE_COLUMNS, export_database, restore_database
+from orders import OrderError
+from seller_api import SellerSessions
 from test_recovery import FakeObjectClient
 
 
@@ -140,3 +142,25 @@ class OrderRecoveryTests(unittest.TestCase):
         self.storage.put_json(self.key, manifest)
         with self.assertRaisesRegex(ValueError, 'Unsupported'):
             self.restore()
+
+    def test_restored_accounts_require_fresh_authentication_for_both_formats(self):
+        # Neither portable backup format carries authentication generations.
+        # Even a mistakenly retained process-local credential must not match.
+        self.assertNotIn('auth_generation', TABLE_COLUMNS['USERS'])
+        sessions = SellerSessions()
+        old_cookie = sessions.exchange(sessions.issue(2, self.source.seller_auth_generation(2)))
+        old_generation = sessions.principal(old_cookie)[1]
+        for export_format in (2, 1):
+            with self.subTest(export_format=export_format):
+                if export_format == 1:
+                    with patch('recovery.TABLE_COLUMNS', LEGACY_TABLE_COLUMNS), patch('recovery.EXPORT_FORMAT', 1):
+                        self.key = export_database(self.src, self.storage)
+                self.restore()
+                self.assertNotEqual(self.target.seller_auth_generation(2), old_generation)
+                with self.assertRaises(OrderError) as error:
+                    self.target.seller_snapshot(2, auth_generation=old_generation)
+                self.assertEqual(error.exception.code, 'session')
+                # Reuse the empty target for the other format, respecting FKs.
+                for table in reversed(TABLE_COLUMNS):
+                    self.dst.db.execute(f'DELETE FROM {table}')
+                self.dst.db.commit()

@@ -9,6 +9,7 @@ CREATE TABLE users (
     full_name VARCHAR2(160 CHAR) NOT NULL,
     email VARCHAR2(254 CHAR) NOT NULL,
     phone VARCHAR2(40 CHAR) NOT NULL,
+    auth_generation NUMBER(19) DEFAULT 0 NOT NULL CHECK (auth_generation >= 0),
     phone_verified NUMBER(1) DEFAULT 0 NOT NULL
         CHECK (phone_verified IN (0, 1)),
     role VARCHAR2(8 CHAR) DEFAULT 'CUSTOMER' NOT NULL

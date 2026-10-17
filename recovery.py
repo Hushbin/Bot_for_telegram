@@ -3,6 +3,7 @@
 import gzip
 import hashlib
 import json
+import secrets
 import tempfile
 import time
 from datetime import datetime, timezone
@@ -270,9 +271,16 @@ def restore_database(connection, storage, manifest_key):
                             values[column] = datetime.fromisoformat(values[column])
                     cursor.setinputsizes(**{column: oracledb.DB_TYPE_TIMESTAMP_TZ
                                             for column in TIMESTAMP_COLUMNS & values.keys()})
-                    placeholders = ", ".join(f":{column}" for column in columns)
+                    insert_columns = columns
+                    if table == 'USERS':
+                        # The stopped bot must restart with empty session memory.
+                        # Also give restored accounts fresh generations, never a
+                        # snapshot generation that could match an old credential.
+                        values['auth_generation'] = secrets.randbelow(2**62) + 1
+                        insert_columns = (*columns, 'auth_generation')
+                    placeholders = ", ".join(f":{column}" for column in insert_columns)
                     cursor.execute(
-                        f"INSERT INTO {SCHEMA}.{table} ({', '.join(columns)}) "
+                        f"INSERT INTO {SCHEMA}.{table} ({', '.join(insert_columns)}) "
                         f"VALUES ({placeholders})", values)
                     imported[table] += 1
             if seen != manifest["counts"]:

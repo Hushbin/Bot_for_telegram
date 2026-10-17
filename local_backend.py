@@ -19,6 +19,7 @@ CREATE TABLE IF NOT EXISTS users (
     full_name TEXT NOT NULL,
     email TEXT NOT NULL,
     phone TEXT NOT NULL,
+    auth_generation INTEGER NOT NULL DEFAULT 0 CHECK (auth_generation >= 0),
     phone_verified INTEGER NOT NULL DEFAULT 0 CHECK (phone_verified IN (0, 1)),
     role TEXT NOT NULL DEFAULT 'CUSTOMER' CHECK (role IN ('CUSTOMER', 'SELLER')),
     preferred_category TEXT,
@@ -54,6 +55,7 @@ CREATE INDEX IF NOT EXISTS products_seller_idx ON products(seller_telegram_user_
 # Columns added after the first release. CREATE TABLE IF NOT EXISTS leaves an existing
 # .local/bot.sqlite3 untouched, so these are added in place when missing.
 COLUMN_MIGRATIONS = (
+    ("users", "auth_generation", "INTEGER NOT NULL DEFAULT 0 CHECK (auth_generation >= 0)"),
     ("users", "phone_verified", "INTEGER NOT NULL DEFAULT 0"),
     ("users", "deleted_at", "TEXT"),
     ("sellers", "deleted_at", "TEXT"),
@@ -133,7 +135,7 @@ class SQLiteStore(SellerStoreMixin, OrderStoreMixin):
 
     def check(self):
         with self.connect() as connection:
-            connection.execute("SELECT COUNT(*) FROM users").fetchone()
+            connection.execute("SELECT auth_generation FROM users WHERE 1 = 0")
             connection.execute("SELECT telegram_photo_file_id, telegram_photo_bot_id, "
                                "photo_version_id FROM products WHERE 1 = 0")
             for table, columns in ORDER_TABLE_COLUMNS.items():
@@ -327,7 +329,7 @@ class SQLiteStore(SellerStoreMixin, OrderStoreMixin):
             cursor = connection.execute("""
                 UPDATE users SET full_name = ?, email = ?, phone = ?, phone_verified = 0,
                        role = 'CUSTOMER', preferred_category = NULL,
-                       deleted_at = CURRENT_TIMESTAMP
+                       auth_generation = auth_generation + 1, deleted_at = CURRENT_TIMESTAMP
                 WHERE telegram_user_id = ? AND deleted_at IS NULL
             """, (ERASED, ERASED, ERASED, telegram_user_id))
             if cursor.rowcount != 1:

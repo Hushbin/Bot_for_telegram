@@ -44,7 +44,7 @@ class SchemaTests(unittest.TestCase):
                "SELLERS": {"TELEGRAM_USER_ID", "BUSINESS_NAME"},
                "PRODUCTS": {"PRODUCT_ID", "DELETED_AT"}}
         statements = self.setup_db.missing_column_statements(old)
-        self.assertEqual(len(statements), 7)
+        self.assertEqual(len(statements), 8)
         self.assertTrue(all(s.startswith("ALTER TABLE ") for s in statements))
         self.assertIn("ALTER TABLE USERS ADD (PHONE_VERIFIED ", " ".join(statements))
         self.assertIn("ALTER TABLE PRODUCTS ADD (CURRENCY VARCHAR2(3 CHAR) DEFAULT 'USD' NOT NULL)",

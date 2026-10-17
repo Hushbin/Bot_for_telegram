@@ -29,12 +29,11 @@ class SellerStoreMixin:
                 pid=pid, object_key=object_key, version_id=version_id,
                 bot_id=bot_id, file_id=file_id) == 1
 
-    def replace_seller_product_photo(self, uid, pid, object_key, version_id, expected_key):
+    def replace_seller_product_photo(self, uid, pid, object_key, version_id, expected_key,
+                                     *, auth_generation=None):
         """Attach an uploaded photo only if the live account/product still matches."""
         with self.order_transaction(True) as db:
-            db.accounts(uid)
-            if not self._live(db, 'users', uid) or not self._live(db, 'sellers', uid):
-                raise OrderError('permission', 'Register as a seller in the bot first.')
+            self._seller_account(db, uid, auth_generation)
             product = self._product(db, pid, lock=True)
             if not product or product['seller_telegram_user_id'] != uid or product['deleted_at']:
                 raise OrderError('missing', 'Product not found.')
@@ -46,12 +45,24 @@ class SellerStoreMixin:
                        object_key=object_key, version_id=version_id, pid=pid)
             return product['photo_object_key'], product['photo_version_id']
 
-    def seller_snapshot(self, uid):
-        with self.order_transaction() as db:
-            user = self._live(db, 'users', uid)
-            seller = self._live(db, 'sellers', uid)
-            if not user or not seller:
-                raise OrderError('permission', 'Register as a seller in the bot first.')
+    def _seller_account(self, db, uid, auth_generation=None):
+        db.accounts(uid)
+        user = self._auth_user(db, uid, auth_generation)
+        seller = self._live(db, 'sellers', uid)
+        if not user or not seller:
+            raise OrderError('permission', 'Register as a seller in the bot first.')
+        return user, seller
+
+    def seller_auth_generation(self, uid, *, auth_generation=None):
+        with self.order_transaction(True) as db:
+            user, _ = self._seller_account(db, uid, auth_generation)
+            return int(user['auth_generation'])
+
+    def seller_snapshot(self, uid, *, auth_generation=None):
+        # Hold the account lock through all reads so erasure/re-registration cannot
+        # mix one generation's authorization with another generation's data.
+        with self.order_transaction(True) as db:
+            user, seller = self._seller_account(db, uid, auth_generation)
             products = db.all(f"SELECT * FROM {db.table('products')} "
                               'WHERE seller_telegram_user_id = :account_id AND deleted_at IS NULL '
                               'ORDER BY product_id', account_id=uid)
@@ -60,7 +71,7 @@ class SellerStoreMixin:
                             'ORDER BY order_id DESC', account_id=uid)
             return dict(user=user, seller=seller, products=products, orders=orders)
 
-    def save_seller_product(self, uid, values, pid=None):
+    def save_seller_product(self, uid, values, pid=None, *, auth_generation=None):
         name = values.get('name', '')
         description = values.get('description', '')
         if (not isinstance(name, str) or not name.strip() or len(name) > 160
@@ -72,9 +83,7 @@ class SellerStoreMixin:
                 or not 0 <= values['stock_quantity'] < 10**10):
             raise OrderError('validation', 'Check the product name, category, price and stock.')
         with self.order_transaction(True) as db:
-            db.accounts(uid)
-            if not self._live(db, 'users', uid) or not self._live(db, 'sellers', uid):
-                raise OrderError('permission', 'Register as a seller in the bot first.')
+            self._seller_account(db, uid, auth_generation)
             data = {key: values[key] for key in
                     ('name', 'description', 'category', 'price_minor', 'stock_quantity')}
             data['name'] = name.strip()
@@ -92,11 +101,9 @@ class SellerStoreMixin:
                        **data, pid=pid)
             return pid
 
-    def remove_seller_product(self, uid, pid):
+    def remove_seller_product(self, uid, pid, *, auth_generation=None):
         with self.order_transaction(True) as db:
-            db.accounts(uid)
-            if not self._live(db, 'users', uid) or not self._live(db, 'sellers', uid):
-                raise OrderError('permission', 'Register as a seller in the bot first.')
+            self._seller_account(db, uid, auth_generation)
             product = self._product(db, pid, lock=True)
             if not product or product['seller_telegram_user_id'] != uid or product['deleted_at']:
                 raise OrderError('missing', 'Product not found.')
@@ -108,7 +115,7 @@ class SellerStoreMixin:
                        "telegram_photo_file_id = NULL, telegram_photo_bot_id = NULL WHERE product_id = :pid",
                        now=self._order_now(db), pid=pid)
 
-    def save_seller_profile(self, uid, values):
+    def save_seller_profile(self, uid, values, *, auth_generation=None):
         limits = dict(business_name=160, business_email=254, address=400, business_phone=40)
         data = {}
         for key, limit in limits.items():
@@ -119,9 +126,7 @@ class SellerStoreMixin:
         if '@' not in data['business_email']:
             raise OrderError('validation', 'Enter a valid contact email.')
         with self.order_transaction(True) as db:
-            db.accounts(uid)
-            if not self._live(db, 'users', uid) or not self._live(db, 'sellers', uid):
-                raise OrderError('permission', 'Register as a seller in the bot first.')
+            self._seller_account(db, uid, auth_generation)
             assignments = ', '.join(f'{key} = :{key}' for key in data)
             db.execute(f"UPDATE {db.table('sellers')} SET {assignments} WHERE telegram_user_id = :account_id",
                        **data, account_id=uid)

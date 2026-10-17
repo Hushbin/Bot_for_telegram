@@ -27,6 +27,8 @@ need fresh review. Self-orders are rejected.
 
 `ORDERS_ENABLED=false` is the default. It blocks new purchases while preserving
 existing order histories, actions, expiry, delivery, erasure, and recovery.
+This applies to seller-panel actions as well as Telegram: acceptance, decline,
+cancellation and fulfillment remain available while new purchases are paused.
 For local development, set `APP_BACKEND=local`, a separate test `BOT_TOKEN`, and
 `ORDERS_ENABLED=true` in your ignored `.env`. SQLite upgrades automatically.
 

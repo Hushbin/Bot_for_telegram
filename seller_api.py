@@ -41,14 +41,14 @@ class SellerSessions:
                 if expires <= now:
                     collection.pop(key, None)
 
-    def issue(self, uid):
+    def issue(self, uid, auth_generation):
         self.prune()
         # A new /panel command replaces this seller's previous unused link.
-        self.links = {key: value for key, value in self.links.items() if value[0] != uid}
+        self.links = {key: value for key, value in self.links.items() if value[0][0] != uid}
         if len(self.links) >= 10000:
             raise ValueError('Sign-in is busy. Try again shortly.')
         token = secrets.token_urlsafe(32)
-        self.links[self.digest(token)] = (uid, self.clock() + LOGIN_SECONDS)
+        self.links[self.digest(token)] = ((uid, auth_generation), self.clock() + LOGIN_SECONDS)
         return token
 
     def exchange(self, token):
@@ -56,18 +56,19 @@ class SellerSessions:
         item = self.links.pop(self.digest(token), None)
         if item is None:
             return None
-        uid = item[0]
+        principal = item[0]
+        uid = principal[0]
         # Keep at most five signed-in browsers for each seller.
-        existing = [key for key, value in self.sessions.items() if value[0] == uid]
+        existing = [key for key, value in self.sessions.items() if value[0][0] == uid]
         for key in existing[:-4]:
             self.sessions.pop(key, None)
         if len(self.sessions) >= 10000:
             return None
         session = secrets.token_urlsafe(32)
-        self.sessions[self.digest(session)] = (uid, self.clock() + SESSION_SECONDS)
+        self.sessions[self.digest(session)] = (principal, self.clock() + SESSION_SECONDS)
         return session
 
-    def user(self, token):
+    def principal(self, token):
         self.prune()
         item = self.sessions.get(self.digest(token))
         return item[0] if item else None
@@ -146,14 +147,25 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True, media
             session = sessions.exchange(token)
             if not session:
                 return JSONResponse({'error': 'This sign-in link expired or was already used. Send /panel again.'}, 401)
+            uid, generation = sessions.principal(session)
+            try:
+                await asyncio.to_thread(store.seller_auth_generation, uid, auth_generation=generation)
+            except OrderError as exc:
+                sessions.revoke(session)
+                return JSONResponse({'error': str(exc)}, 401 if exc.code == 'session' else 403)
+            except Exception:
+                sessions.revoke(session)
+                logging.getLogger(__name__).exception('Seller sign-in validation failed')
+                return JSONResponse({'error': 'Sign-in is temporarily unavailable. Please try again.'}, 503)
             response = JSONResponse({'ok': True})
             response.set_cookie(COOKIE, session, max_age=SESSION_SECONDS, secure=True,
                                 httponly=True, samesite='strict', path='/')
             return response
         cookie = request.cookies.get(COOKIE, '')
-        uid = sessions.user(cookie)
-        if uid is None:
+        principal = sessions.principal(cookie)
+        if principal is None:
             return JSONResponse({'error': 'Sign in through the bot to open your store.'}, 401)
+        uid, generation = principal
         if path == '/api/logout':
             sessions.revoke(cookie)
             response = JSONResponse({'ok': True})
@@ -161,23 +173,23 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True, media
             return response
         try:
             # Every request rechecks the live seller, including after account erasure.
-            snapshot = await asyncio.to_thread(store.seller_snapshot, uid)
+            snapshot = await asyncio.to_thread(store.seller_snapshot, uid, auth_generation=generation)
             if path == '/api/state':
                 return JSONResponse(panel_state(snapshot, orders_enabled))
             saved_product_id = None
             if path == '/api/products':
-                saved_product_id = await asyncio.to_thread(store.save_seller_product, uid, data)
+                saved_product_id = await asyncio.to_thread(
+                    store.save_seller_product, uid, data, auth_generation=generation)
             elif path.startswith('/api/products/'):
                 pid = int(request.path_params['pid'])
                 if request.method == 'DELETE':
-                    await asyncio.to_thread(store.remove_seller_product, uid, pid)
+                    await asyncio.to_thread(store.remove_seller_product, uid, pid, auth_generation=generation)
                 else:
-                    saved_product_id = await asyncio.to_thread(store.save_seller_product, uid, data, pid)
+                    saved_product_id = await asyncio.to_thread(
+                        store.save_seller_product, uid, data, pid, auth_generation=generation)
             elif path == '/api/profile':
-                await asyncio.to_thread(store.save_seller_profile, uid, data)
+                await asyncio.to_thread(store.save_seller_profile, uid, data, auth_generation=generation)
             elif path.startswith('/api/orders/'):
-                if not orders_enabled:
-                    raise OrderError('permission', 'Ordering is currently disabled.')
                 oid = int(request.path_params['oid'])
                 order = next((o for o in snapshot['orders'] if o['order_id'] == oid), None)
                 if order is None:
@@ -189,14 +201,15 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True, media
                            'ACCEPTED': ('complete', 'cancel')}
                 if action not in allowed.get(order['status'], ()):
                     raise OrderError('conflict', 'This action is no longer available.')
-                await asyncio.to_thread(store.change_order, oid, uid, action, data['version'])
-            snapshot = await asyncio.to_thread(store.seller_snapshot, uid)
+                await asyncio.to_thread(store.change_order, oid, uid, action, data['version'],
+                                        auth_generation=generation)
+            snapshot = await asyncio.to_thread(store.seller_snapshot, uid, auth_generation=generation)
             result = panel_state(snapshot, orders_enabled)
             if saved_product_id is not None:
                 result['saved_product_id'] = int(saved_product_id)
             return JSONResponse(result)
         except OrderError as exc:
-            status = {'permission': 403, 'missing': 404, 'conflict': 409, 'stock': 409}.get(exc.code, 400)
+            status = {'session': 401, 'permission': 403, 'missing': 404, 'conflict': 409, 'stock': 409}.get(exc.code, 400)
             return JSONResponse({'error': str(exc)}, status)
         except Exception:
             logging.getLogger(__name__).exception('Seller API operation failed')
@@ -205,16 +218,17 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True, media
     photo_slots = asyncio.Semaphore(2)
 
     async def photo_endpoint(request):
-        uid = sessions.user(request.cookies.get(COOKIE, ''))
-        if uid is None:
+        principal = sessions.principal(request.cookies.get(COOKIE, ''))
+        if principal is None:
             return JSONResponse({'error': 'Sign in through the bot to open your store.'}, 401)
+        uid, generation = principal
         uploading = request.method == 'PUT'
         if uploading and (request.headers.get('origin') != origin or
                           request.headers.get('content-type', '').split(';')[0] not in ('image/jpeg', 'image/png')):
             return JSONResponse({'error': 'Use a JPEG or PNG upload from the seller panel.'}, 403)
         try:
             async with photo_slots:
-                snapshot = await asyncio.to_thread(store.seller_snapshot, uid)
+                snapshot = await asyncio.to_thread(store.seller_snapshot, uid, auth_generation=generation)
                 pid = int(request.path_params['pid'])
                 product = next((p for p in snapshot['products'] if p['product_id'] == pid), None)
                 if product is None:
@@ -226,6 +240,7 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True, media
                     if not key:
                         raise OrderError('missing', 'This product has no photo yet.')
                     raw = await asyncio.to_thread(media.get_photo, key)
+                    await asyncio.to_thread(store.seller_auth_generation, uid, auth_generation=generation)
                     content_type = 'image/png' if raw.startswith(b'\x89PNG\r\n\x1a\n') else 'image/jpeg'
                     return Response(raw, media_type=content_type)
                 if request.headers.get('if-match') != photo_revision(product):
@@ -246,7 +261,8 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True, media
                     key, version = media.put_product_photo(uid, pid, prepared)
                     try:
                         previous = store.replace_seller_product_photo(
-                            uid, pid, key, version, product.get('photo_object_key'))
+                            uid, pid, key, version, product.get('photo_object_key'),
+                            auth_generation=generation)
                     except Exception:
                         try:
                             media.delete_photo(key, version)
@@ -260,10 +276,10 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True, media
                             logging.getLogger(__name__).exception('Could not remove replaced seller photo')
 
                 await asyncio.to_thread(save_photo)
-                snapshot = await asyncio.to_thread(store.seller_snapshot, uid)
+                snapshot = await asyncio.to_thread(store.seller_snapshot, uid, auth_generation=generation)
                 return JSONResponse(panel_state(snapshot, orders_enabled))
         except OrderError as exc:
-            return JSONResponse({'error': str(exc)}, {'permission': 403, 'missing': 404, 'conflict': 409}.get(exc.code, 400))
+            return JSONResponse({'error': str(exc)}, {'session': 401, 'permission': 403, 'missing': 404, 'conflict': 409}.get(exc.code, 400))
         except FileNotFoundError:
             return JSONResponse({'error': 'The photo is unavailable. Upload it again.'}, 404)
         except Exception:
@@ -297,12 +313,12 @@ class SellerRuntime:
         from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         from telegram.ext import ConversationHandler
         uid = update.effective_user.id
-        seller = await asyncio.to_thread(self.store.get_seller, uid)
-        user = await asyncio.to_thread(self.store.get_user, uid)
-        if not seller or not user:
+        try:
+            generation = await asyncio.to_thread(self.store.seller_auth_generation, uid)
+        except OrderError:
             await update.effective_message.reply_text('Register with /start and create a /sellerprofile first, then send /panel.')
         else:
-            token = self.sessions.issue(uid)
+            token = self.sessions.issue(uid, generation)
             await update.effective_message.reply_text(
                 'Open your seller panel. This private sign-in link works once and expires in 5 minutes. '
                 'Do not forward it. Signing in lasts up to 8 hours.',

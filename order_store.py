@@ -234,12 +234,20 @@ class OrderStoreMixin:
             if product and not product['deleted_at'] and OrderStoreMixin._live(db, 'users', order['seller_id']):
                 raise OrderError('stock', 'Stock would exceed the allowed limit; adjust stock before cancelling.')
 
-    def change_order(self, order_id, actor_id, action, version):
+    def _auth_user(self, db, uid, auth_generation=None):
+        """Call with the account locked; browser credentials belong to one generation."""
+        user = self._live(db, 'users', uid)
+        if auth_generation is not None and (not user or int(user['auth_generation']) != auth_generation):
+            raise OrderError('session', 'This sign-in expired. Sign in through the bot again.')
+        return user
+
+    def change_order(self, order_id, actor_id, action, version, *, auth_generation=None):
         with self.order_transaction(True) as db:
             order = self._order(db, positive_int(order_id))
             if not order:
                 raise OrderError('missing', 'Order not found.')
             db.accounts(order['buyer_id'], order['seller_id'])
+            self._auth_user(db, actor_id, auth_generation)
             self._product(db, order['product_id'], lock=True)
             order = self._order(db, order_id, lock=True)
             if not self._visible(db, order, actor_id):

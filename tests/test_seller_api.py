@@ -22,20 +22,20 @@ class SessionTests(unittest.TestCase):
     def test_one_use_expiry_and_revocation(self):
         now = [100]
         sessions = SellerSessions(lambda: now[0])
-        old = sessions.issue(1)
-        token = sessions.issue(1)
+        old = sessions.issue(1, 0)
+        token = sessions.issue(1, 0)
         self.assertIsNone(sessions.exchange(old))
         session = sessions.exchange(token)
-        self.assertEqual(sessions.user(session), 1)
+        self.assertEqual(sessions.principal(session), (1, 0))
         self.assertIsNone(sessions.exchange(token))
         sessions.revoke(session)
-        self.assertIsNone(sessions.user(session))
-        token = sessions.issue(1)
+        self.assertIsNone(sessions.principal(session))
+        token = sessions.issue(1, 0)
         now[0] += 301
         self.assertIsNone(sessions.exchange(token))
-        session = sessions.exchange(sessions.issue(1))
+        session = sessions.exchange(sessions.issue(1, 0))
         now[0] += 28801
-        self.assertIsNone(sessions.user(session))
+        self.assertIsNone(sessions.principal(session))
 
 
 class SellerApiTests(unittest.IsolatedAsyncioTestCase):
@@ -52,6 +52,7 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
         self.other_pid = self.store.create_product(2, 'Other', 'art', '', 100, 5)
         self.sessions = SellerSessions()
         app = create_api(self.store, self.sessions, 'https://seller.test', 'test_bot', media=self.media)
+        self.api = app
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
             base_url='https://seller.test', headers={'Origin': 'https://seller.test'})
         self.addAsyncCleanup(self.client.aclose)
@@ -60,7 +61,7 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
         await self.login()
 
     async def login(self, uid=1):
-        response = await self.client.post('/api/session', json={'token': self.sessions.issue(uid)})
+        response = await self.client.post('/api/session', json={'token': self.sessions.issue(uid, self.store.seller_auth_generation(uid))})
         self.assertEqual(response.status_code, 200)
         return response
 
@@ -138,10 +139,10 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_erasure_and_non_seller_revoke_access(self):
         self.store.erase_user(1)
-        self.assertEqual((await self.client.get('/api/state')).status_code, 403)
-        self.assertEqual((await self.client.post('/api/products', json=self.data)).status_code, 403)
-        await self.login(3)
-        self.assertEqual((await self.client.get('/api/state')).status_code, 403)
+        self.assertEqual((await self.client.get('/api/state')).status_code, 401)
+        self.assertEqual((await self.client.post('/api/products', json=self.data)).status_code, 401)
+        response = await self.client.post('/api/session', json={'token': self.sessions.issue(3, 0)})
+        self.assertEqual(response.status_code, 403)
 
     async def test_profile_and_logout(self):
         data = dict(business_name='New store', business_email='n@example.com', address='Town', business_phone='+123456789')
@@ -150,7 +151,7 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.store.get_seller(2)['business_name'], 'Store 2')
         old = self.client.cookies.get(COOKIE)
         self.assertEqual((await self.client.post('/api/logout', json={})).status_code, 200)
-        self.assertIsNone(self.sessions.user(old))
+        self.assertIsNone(self.sessions.principal(old))
         self.assertEqual((await self.client.get('/api/state')).status_code, 401)
 
     async def upload(self, raw=None, revision='none', pid=None, **headers):
@@ -223,7 +224,7 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.upload(**{'Content-Type': 'text/html'})).status_code, 403)
         self.assertEqual((await self.client.get(f'/api/products/{self.pid}/photo')).status_code, 404)
         self.store.erase_user(1)
-        self.assertEqual((await self.upload()).status_code, 403)
+        self.assertEqual((await self.upload()).status_code, 401)
 
     async def test_invalid_oversized_and_disguised_files_are_not_stored(self):
         for raw in (b'', b'\x89PNG\r\n\x1a\n', b'<svg></svg>', image_bytes('GIF'), image_bytes(size=(4001, 4000))):
@@ -249,7 +250,7 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
             self.store.erase_user(1)
             return result
         with patch.object(self.media, 'put_product_photo', side_effect=erase_after_upload):
-            self.assertEqual((await self.upload()).status_code, 403)
+            self.assertEqual((await self.upload()).status_code, 401)
         self.assertEqual(list(self.media.directory.rglob('*.jpg')), [])
 
     async def test_concurrent_photo_change_preserves_winner_and_cleans_loser(self):
@@ -270,6 +271,127 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(LookupError):
             self.store.set_product_photo(1, self.pid, 'late-telegram.jpg', 'version')
         self.assertEqual(self.store.get_product(self.pid)['photo_object_key'], key)
+
+    async def test_paused_new_orders_allow_existing_order_lifecycle(self):
+        app = create_api(self.store, self.sessions, 'https://seller.test', 'test_bot',
+                         orders_enabled=False, media=self.media)
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
+                base_url='https://seller.test', headers={'Origin': 'https://seller.test'},
+                cookies=self.client.cookies) as client:
+            async def action(order, name, version):
+                return await client.post(f'/api/orders/{order["order_id"]}',
+                                         json={'action': name, 'version': version})
+            order = self.order()
+            response = await action(order, 'accept', 1)
+            self.assertEqual(response.status_code, 200)
+            self.assertFalse(response.json()['orders_enabled'])
+            self.assertEqual(self.store.get_product(self.pid)['stock_quantity'], 3)
+            self.assertEqual((await action(order, 'accept', 1)).status_code, 409)
+            self.assertEqual((await action(order, 'cancel', 2)).status_code, 200)
+            self.assertEqual((await action(order, 'cancel', 2)).status_code, 409)
+            self.assertEqual(self.store.get_product(self.pid)['stock_quantity'], 5)
+            fulfilled = self.order()
+            self.assertEqual((await action(fulfilled, 'accept', 1)).status_code, 200)
+            self.assertEqual((await action(fulfilled, 'complete', 2)).status_code, 200)
+            declined = self.order()
+            self.assertEqual((await action(declined, 'decline', 1)).status_code, 200)
+            cancelled = self.order()
+            self.assertEqual((await action(cancelled, 'cancel', 1)).status_code, 200)
+            stranger = self.order(self.other_pid)
+            self.assertEqual((await action(stranger, 'accept', 1)).status_code, 404)
+        with self.store.order_transaction() as db:
+            events = db.all('SELECT * FROM order_notifications WHERE order_id = :oid', oid=order['order_id'])
+        self.assertEqual(len(events), 3)  # create, accept, cancel; retries added nothing
+
+    def reregister(self):
+        self.store.erase_user(1)
+        self.store.upsert_user(1, 'New account', 'new@example.com', '+1234567890')
+        self.store.upsert_seller(1, 'New store', 'new@example.com', 'Online', '+1234567890')
+
+    async def test_old_cookie_and_unused_link_stay_invalid_after_reregistration(self):
+        unused = self.sessions.issue(1, self.store.seller_auth_generation(1))
+        old_cookie = self.client.cookies.get(COOKIE)
+        self.reregister()
+        self.assertEqual((await self.client.get('/api/state')).status_code, 401)
+        self.assertEqual((await self.client.post('/api/products', json=self.data)).status_code, 401)
+        response = await self.client.post('/api/session', json={'token': unused})
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn('set-cookie', response.headers)
+        # Fresh links work after re-registration, while a copied old browser remains invalid.
+        fresh = self.sessions.issue(1, self.store.seller_auth_generation(1))
+        self.assertEqual((await self.client.post('/api/session', json={'token': fresh})).status_code, 200)
+        self.assertEqual((await self.client.get('/api/state')).json()['seller']['name'], 'New store')
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=self.api), base_url='https://seller.test',
+                                    cookies={COOKIE: old_cookie}) as old_browser:
+            self.assertEqual((await old_browser.get('/api/state')).status_code, 401)
+
+    async def test_unused_link_rejected_while_account_is_erased(self):
+        unused = self.sessions.issue(1, 0)
+        self.store.erase_user(1)
+        response = await self.client.post('/api/session', json={'token': unused})
+        self.assertEqual(response.status_code, 401)
+        self.assertNotIn('set-cookie', response.headers)
+
+    async def test_every_mutation_rechecks_generation_after_initial_snapshot(self):
+        # Each request passes its first snapshot before erasure/re-registration.
+        # Supplying the fresh generation in JSON must never override the cookie.
+        for method in ('save_seller_product', 'remove_seller_product', 'save_seller_profile', 'change_order'):
+            with self.subTest(method=method):
+                generation = self.store.seller_auth_generation(1)
+                await self.client.post('/api/session', json={'token': self.sessions.issue(1, generation)})
+                pid = self.store.create_product(1, 'Race', 'clothing', '', 100, 5)
+                order = self.order(pid)
+                original = getattr(self.store, method)
+                def interleave(*args, **kwargs):
+                    self.reregister()
+                    return original(*args, **kwargs)
+                with patch.object(self.store, method, side_effect=interleave):
+                    if method == 'save_seller_product':
+                        response = await self.client.post('/api/products', json=dict(self.data, auth_generation=generation + 1))
+                    elif method == 'remove_seller_product':
+                        response = await self.client.request('DELETE', f'/api/products/{pid}', json={})
+                    elif method == 'save_seller_profile':
+                        response = await self.client.put('/api/profile', json=dict(business_name='Stale write',
+                            business_email='stale@example.com', address='Old', business_phone='+123456789'))
+                    else:
+                        response = await self.client.post(f'/api/orders/{order["order_id"]}',
+                                                         json={'action': 'accept', 'version': 1})
+                self.assertEqual(response.status_code, 401)
+                self.assertEqual(self.store.get_seller(1)['business_name'], 'New store')
+                self.assertEqual(self.store.list_products(seller_id=1), [])
+
+    async def test_edit_rechecks_generation_after_snapshot(self):
+        original = self.store.save_seller_product
+        def interleave(*args, **kwargs):
+            self.reregister()
+            return original(*args, **kwargs)
+        with patch.object(self.store, 'save_seller_product', side_effect=interleave):
+            response = await self.client.put(f'/api/products/{self.pid}', json=self.data)
+        self.assertEqual(response.status_code, 401)
+
+    async def test_reregistration_during_upload_cleans_unattached_photo(self):
+        put = self.media.put_product_photo
+        def interleave(*args):
+            uploaded = put(*args)
+            self.reregister()
+            return uploaded
+        with patch.object(self.media, 'put_product_photo', side_effect=interleave):
+            response = await self.upload()
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(list(self.media.directory.rglob('*.jpg')), [])
+        self.assertEqual(self.store.list_products(seller_id=1), [])
+
+    async def test_download_rechecks_generation_after_storage_read(self):
+        await self.upload()
+        read = self.media.get_photo
+        def interleave(*args):
+            raw = read(*args)
+            self.reregister()
+            return raw
+        with patch.object(self.media, 'get_photo', side_effect=interleave):
+            response = await self.client.get(f'/api/products/{self.pid}/photo')
+        self.assertEqual(response.status_code, 401)
+        self.assertNotEqual(response.headers['content-type'], 'image/jpeg')
 
 
 class PhotoValidationTests(unittest.TestCase):

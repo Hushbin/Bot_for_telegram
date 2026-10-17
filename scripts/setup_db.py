@@ -81,6 +81,7 @@ def create_user(cursor, username: str, secret: str, *, owner: bool) -> None:
 # Columns added after the first release, as (table, column, definition). CREATE TABLE
 # in schema.sql covers fresh databases; these bring an existing database up to date.
 COLUMN_MIGRATIONS = (
+    ("USERS", "AUTH_GENERATION", "NUMBER(19) DEFAULT 0 NOT NULL CHECK (auth_generation >= 0)"),
     ("USERS", "PHONE_VERIFIED", "NUMBER(1) DEFAULT 0 NOT NULL CHECK (phone_verified IN (0, 1))"),
     ("USERS", "DELETED_AT", "TIMESTAMP WITH TIME ZONE"),
     ("SELLERS", "DELETED_AT", "TIMESTAMP WITH TIME ZONE"),

@@ -108,6 +108,7 @@ class LocalBackendTests(unittest.TestCase):
             connection.close()
             store = SQLiteStore(path)
             SQLiteStore(path)  # opening again must be harmless
+            self.assertEqual(store.seller_auth_generation(7), 0)
             user = store.get_user(7)
             self.assertEqual((user["full_name"], user["phone_verified"]), ("Old User", False))
             self.assertEqual(user["preferred_category"], "clothing")
