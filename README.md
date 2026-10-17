@@ -10,7 +10,10 @@ Telegram bot backed by the existing OCI development Autonomous JSON Database and
 | `SME_SCHEMA.SELLERS` | Listing profile for a registered seller | Listing name, seller contact email and phone, location, erasure time |
 | `SME_SCHEMA.PRODUCTS` | Seller catalog and stock | Global catalog ID, category key, price in minor units (cents) and currency, quantity, optional private photo object key and its version ID, erasure time |
 
-The bot does not have orders, payments, reservations, or seller approval, so it does not create tables for those features. Product photos stay in Object Storage; the database stores only their private object keys. Customer preference is one column because the current UI chooses one category. A Telegram user ID, rather than a chat ID or a temporary Fauna record ID, identifies a profile across restarts.
+| `SME_SCHEMA.ORDERS` | Confirmed buyer requests | Participants, immutable price/contact snapshots, consent, status/version and expiry |
+| `SME_SCHEMA.ORDER_NOTIFICATIONS` | Durable seller and buyer alerts | Event version, recipient, retry schedule, delivery lease and outcome |
+
+Ordering is disabled by default (`ORDERS_ENABLED=false`). See [ORDERING.md](ORDERING.md) for buyer/seller flows, migration and rollout. Pending orders reserve no stock; seller acceptance deducts stock atomically. Payment and fulfillment are arranged directly. Product photos stay in Object Storage; the database stores only their private object keys. Customer preference is one column because the current UI chooses one category. A Telegram user ID, rather than a chat ID or a temporary Fauna record ID, identifies a profile across restarts.
 
 The database's `product_id` identifies a product globally for buyers. Sellers also see a stable number within their own catalog, starting at `#1`; previous listings, including erased ones, keep their place so numbers are never reassigned. This number is derived from existing product rows, so it needs no schema migration.
 
@@ -18,7 +21,7 @@ The database's `product_id` identifies a product globally for buyers. Sellers al
 
 **Categories.** `products.category` and `users.preferred_category` hold the category *key* (`clothing`, `hardware`, `food`, `art`), never its display label. The keys and labels live in `catalog.py`; rewording a label there changes what users see without touching stored rows. Earlier releases stored the labels (`Clothing/Fashion`, ...), and `scripts/setup_db.py` converts those rows to keys. A category value that matches no old label is left as it is and is displayed unchanged.
 
-`scripts/setup_db.py` creates the `SME_SCHEMA` owner and `SME_BOT` runtime user. The owner has a 20 MB quota and DDL privileges for these tables; the runtime user has only `CREATE SESSION` plus `SELECT`, `INSERT`, and `UPDATE` on the three tables. It has no schema creation, deletion, or ADMIN privileges. The script is rerunnable and skips existing tables and indexes. It also brings an existing database up to date: it adds any column listed in `COLUMN_MIGRATIONS` that a table lacks, renames the columns listed in `COLUMN_RENAMES` (`price_kobo` to `price_minor`), and converts old category labels to keys. Every step checks first, so rerunning it changes nothing. It does **not** rotate existing user passwords, drop columns, or retype columns, and there is no automatic way back: to undo the rename, run `ALTER TABLE products RENAME COLUMN price_minor TO price_kobo` as the schema owner (the category keys would then show as plain text in the old release). The bot checks for the columns it needs at startup and refuses to start with a pointer to this script if they are missing, so **run `scripts/setup_db.py` against the database before deploying a release that adds columns**; otherwise the deploy rolls itself back.
+`scripts/setup_db.py` creates the `SME_SCHEMA` owner and `SME_BOT` runtime user. The owner has a 20 MB quota and DDL privileges for these tables; the runtime user has only `CREATE SESSION` plus `SELECT`, `INSERT`, and `UPDATE` on the five tables. It has no schema creation, deletion, or ADMIN privileges. The script is rerunnable and skips existing tables and indexes. It also brings an existing database up to date: it adds any column listed in `COLUMN_MIGRATIONS` that a table lacks, renames the columns listed in `COLUMN_RENAMES` (`price_kobo` to `price_minor`), and converts old category labels to keys. Every step checks first, so rerunning it changes nothing. It does **not** rotate existing user passwords, drop columns, or retype columns, and there is no automatic way back: to undo the rename, run `ALTER TABLE products RENAME COLUMN price_minor TO price_kobo` as the schema owner (the category keys would then show as plain text in the old release). The bot checks for the columns it needs at startup and refuses to start with a pointer to this script if they are missing, so **run `scripts/setup_db.py` against the database before deploying a release that adds columns**; otherwise the deploy rolls itself back.
 
 ## Personal data
 
@@ -26,7 +29,7 @@ What the bot stores, who sees it, and for how long. New users see the privacy no
 
 | Data | Stored when | Visible to other users |
 | --- | --- | --- |
-| Telegram ID, account contact name, email, phone (and whether Telegram verified it), role | Registration (`/start`, `/profile`) | No |
+| Telegram ID, account contact name, email, phone (and whether Telegram verified it), role | Registration (`/start`, `/profile`) | Name and phone shared with the selected seller only after explicit order confirmation; email stays private |
 | Preferred category | Only when a user chooses one with `/preferences` | No |
 | Seller listing name | Seller profile | Yes, shown with each product; may be a shop name, nickname or personal name |
 | Seller contact email and phone, location | Seller profile | No |
@@ -34,6 +37,7 @@ What the bot stores, who sees it, and for how long. New users see the privacy no
 
 - **Phone number.** Users either share the number Telegram has verified (a persistent contact-share keyboard; the bot accepts only the user's own contact) or type any number, which is stored as unverified. If the typing keyboard covers the button, tap the keyboard icon beside the message field.
 - **Seller listing.** A registered business is not required. Enter a listing name and a city/area, or `Online`, as `name | location`. The account email and phone are copied into seller contact fields unless the seller adds `| email | phone`. The listing name and products are public; the location and contact details are visible only to the operator. Sellers who use their personal name as the listing name make that name public. Existing `name, email, address, phone` input is still accepted.
+- **Orders.** Confirmation saves the displayed name, phone, price and consent version/time. Erasure cancels open orders and scrubs that party’s snapshots; redacted transaction history remains for inventory consistency. Already delivered Telegram messages cannot reliably be recalled.
 - **Retention.** Data is kept until the user erases it with `/deleteme`; there is no automatic expiry. Users can see what is stored with `/mydata`.
 - **Erasure.** `/deleteme` asks for confirmation, then overwrites the user's name, email and phone, their seller profile and their products with `[deleted]`, hides the products, and deletes the photo objects. Rows are overwritten rather than deleted so the runtime database account needs no `DELETE` privilege. The numeric Telegram ID and the erasure time remain. A user who registers again starts from an empty profile.
 - **Photos.** Deleting a photo needs its version ID because the bucket is versioned; the ID is stored with the product. A photo stored without one (none are created by this version) only gets a delete marker and needs manual cleanup. If a photo cannot be deleted, the data is still erased, the user is told, and the object key is logged at ERROR.
@@ -69,7 +73,7 @@ its SQLite file and photos do not sync to OCI.
 
 ### Run with OCI
 
-Use Python 3.10 or newer. This checkout already has the three empty tables, a protected local wallet, and ignored local database credentials. Add your Telegram token to the ignored `.env` file before starting the bot. For a fresh checkout:
+Use Python 3.10 or newer. Use the existing ignored local configuration when available; a fresh checkout needs database setup and a wallet. Add your Telegram token to the ignored `.env` file before starting the bot. For a fresh checkout:
 
 ```sh
 python3 -m venv .venv
@@ -110,6 +114,9 @@ Telegram's command menu lists every command. `/menu` opens a button menu for the
 | `/photo [number]` | Attach a photo using your seller product number; prefix a global catalog ID with `G` |
 | `/products [all\|clothing\|hardware\|food\|art]` | Browse the latest 20 products |
 | `/product [catalog ID]` | View details and the private bucket photo if present; accepts `1` or `#1` and asks for an ID when omitted |
+| `/order [catalog ID]` | Review a quantity, price and contact sharing before confirming an order |
+| `/orders` | View your purchases and cancel pending requests |
+| `/sales` | View incoming orders, accept/decline, fulfill or cancel accepted orders |
 | `/myproducts` | List your latest 20 products |
 | `/stock [number quantity]` | Set stock using your seller product number; prefix a global catalog ID with `G` |
 | `/cancel`, `/skip` | Stop the current conversation, or finish a product without a photo |

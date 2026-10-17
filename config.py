@@ -31,6 +31,7 @@ class Settings:
     oci_profile: str
     local_db_path: str
     local_media_dir: str
+    orders_enabled: bool = False
 
 
 def load_settings() -> Settings:
@@ -74,9 +75,13 @@ def load_settings() -> Settings:
             "DB_PASSWORD": os.getenv("DB_PASSWORD", ""),
             "DB_WALLET_PASSWORD": os.getenv("DB_WALLET_PASSWORD", ""),
         }
+    orders_enabled = os.getenv("ORDERS_ENABLED", "false").lower()
+    if orders_enabled not in ("true", "false"):
+        raise ValueError("ORDERS_ENABLED must be true or false")
     local_root = Path(__file__).resolve().parent / ".local"
     return Settings(
         backend=backend,
+        orders_enabled=orders_enabled == "true",
         bot_token=secrets["BOT_TOKEN"],
         db_dsn=os.getenv("DB_DSN", ""),
         db_wallet_dir=os.getenv("DB_WALLET_DIR", ""),

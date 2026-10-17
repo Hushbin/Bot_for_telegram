@@ -2,6 +2,9 @@
 
 import oracledb
 
+from order_store import OrderDB, OrderStoreMixin
+from order_schema import TABLE_COLUMNS as ORDER_TABLE_COLUMNS
+
 
 SCHEMA = "SME_SCHEMA"
 ERASED = "[deleted]"
@@ -10,6 +13,7 @@ REQUIRED_COLUMNS = {
     "USERS": ("telegram_user_id", "phone_verified", "deleted_at"),
     "SELLERS": ("telegram_user_id", "deleted_at"),
     "PRODUCTS": ("product_id", "deleted_at", "photo_version_id", "price_minor", "currency"),
+    **ORDER_TABLE_COLUMNS,
 }
 
 
@@ -19,7 +23,7 @@ def row_dict(cursor, row):
     return {column[0].lower(): value for column, value in zip(cursor.description, row)}
 
 
-class OracleStore:
+class OracleStore(OrderStoreMixin):
     def __init__(self, settings):
         self.schema = getattr(settings, "db_schema", None) or SCHEMA
         self.connection_args = dict(
@@ -112,6 +116,9 @@ class OracleStore:
                       address, business_phone):
         with self.connect() as connection:
             with connection.cursor() as cursor:
+                cursor.execute(f"SELECT telegram_user_id FROM {self.schema}.USERS "
+                               "WHERE telegram_user_id = :id FOR UPDATE", id=telegram_user_id)
+                cursor.fetchone()
                 cursor.execute(f"""
                     MERGE INTO {self.schema}.SELLERS s
                     USING (SELECT :id AS telegram_user_id FROM dual) incoming
@@ -175,6 +182,11 @@ class OracleStore:
     def update_product(self, seller_id, product_id, name, category, description,
                        price_minor, stock_quantity):
         with self.connect() as connection:
+            order_db = OrderDB(connection, self.schema)
+            try:
+                self.guard_stock(order_db, product_id, seller_id, stock_quantity)
+            finally:
+                order_db.cursor.close()
             with connection.cursor() as cursor:
                 cursor.execute(f"""
                     UPDATE {self.schema}.PRODUCTS SET name = :name, category = :category,
@@ -207,6 +219,11 @@ class OracleStore:
 
     def set_stock(self, seller_id, product_id, quantity):
         with self.connect() as connection:
+            order_db = OrderDB(connection, self.schema)
+            try:
+                self.guard_stock(order_db, product_id, seller_id, quantity)
+            finally:
+                order_db.cursor.close()
             with connection.cursor() as cursor:
                 cursor.execute(f"""
                     UPDATE {self.schema}.PRODUCTS SET stock_quantity = :quantity,
@@ -323,6 +340,11 @@ class OracleStore:
                     WHERE telegram_user_id = :id AND deleted_at IS NULL
                 """, erased_name=ERASED, erased_email=ERASED, erased_address=ERASED,
                     erased_phone=ERASED, id=telegram_user_id)
+                order_db = OrderDB(connection, self.schema)
+                try:
+                    self.erase_orders(order_db, telegram_user_id)
+                finally:
+                    order_db.cursor.close()
                 cursor.execute(f"""
                     SELECT photo_object_key, photo_version_id FROM {self.schema}.PRODUCTS
                     WHERE seller_telegram_user_id = :id AND photo_object_key IS NOT NULL

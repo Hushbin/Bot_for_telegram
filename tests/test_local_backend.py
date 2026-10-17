@@ -16,6 +16,14 @@ class LocalBackendTests(unittest.TestCase):
         self.assertEqual(settings.db_dsn, "")
         self.assertEqual(settings.oci_namespace, "")
 
+    def test_order_setting_defaults_disabled_and_accepts_only_booleans(self):
+        for value, expected in (("true", True), ("false", False)):
+            with patch.dict("os.environ", {"APP_BACKEND": "local", "BOT_TOKEN": "test", "ORDERS_ENABLED": value}, clear=True):
+                self.assertIs(load_settings().orders_enabled, expected)
+        with patch.dict("os.environ", {"APP_BACKEND": "local", "BOT_TOKEN": "test", "ORDERS_ENABLED": "maybe"}, clear=True):
+            with self.assertRaises(ValueError):
+                load_settings()
+
     def test_catalog_persists_and_photo_rollback(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
@@ -112,6 +120,12 @@ class LocalBackendTests(unittest.TestCase):
                 names = {row["name"] for row in connection.execute("PRAGMA table_info(products)")}
             self.assertIn("price_minor", names)
             self.assertNotIn("price_kobo", names)
+            store.check()
+            store.upsert_user(8, "Buyer", "buyer@example.com", "+123456789")
+            from uuid import uuid4
+            order = store.create_order(8, store.quote_order(8, 1, 1), uuid4().hex)
+            self.assertEqual(order["unit_price_minor"], 500)
+            self.assertEqual(SQLiteStore(path).get_order(order["order_id"], 8)["status"], "PENDING")
             # The renamed column keeps working for new writes and its CHECK constraint.
             self.assertTrue(store.update_product(7, 1, "Renamed", "food", None, 650, 3))
             self.assertEqual(store.get_product(1)["price_minor"], 650)

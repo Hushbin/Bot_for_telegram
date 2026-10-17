@@ -1,7 +1,7 @@
 # Ordering implementation plan
 
 The implementation follows these stages. See ORDERING.md for operation and
-ORDERING_VALIDATION.md for executed checks and current restoration status.
+ORDERING_VALIDATION.md for executed checks and validation limitations.
 
 1. Add ORDERS and ORDER_NOTIFICATIONS to Oracle and SQLite, with constraints,
    indexes, startup schema checks, repeatable migrations, runtime DML grants, and

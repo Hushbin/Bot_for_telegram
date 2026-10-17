@@ -14,11 +14,24 @@ The small migrated fixture occupied 1.13 MB under a 20 MB schema quota.
 
 ## Workspace recovery
 
-The workspace subsequently returned to the published initial checkout, losing the
-uncommitted ordering files. The implementation is being restored from the saved
-conversation and will be committed separately. Fresh validation results for the
-restored files will be recorded here before the implementation commit is published.
-The deployment updates already on upstream `master` are retained.
+The workspace returned to the published initial checkout and lost the uncommitted
+ordering files. The implementation and tests were reconstructed from the saved
+conversation and committed on `codex/ordering-recovery`. Upstream deployment
+updates are retained. This reconstruction is not a byte-for-byte recovery.
+
+Fresh checks on the restored implementation (17 October 2026):
+
+- `.venv/bin/python -m unittest discover -s tests`: 277 tests run, 234 passed,
+  43 Oracle tests skipped because no disposable Oracle connection is configured.
+- Shared order contracts, eight actual multiple-connection SQLite inventory races,
+  Telegram purchase/signup/confirmation/action journeys with simulated HTTP,
+  delivery retries/leases/expiry/shutdown, and five-table recovery with actual
+  SQLite foreign keys and rollback all passed.
+- `git diff --check`: passed in both application and infrastructure repositories.
+- The restored Oracle adapter and migrations have not been rerun against Oracle.
+  The previous run above provides historical evidence, not fresh verification of
+  these reconstructed files. CI results are not available through this session's
+  connectors.
 
 ## Deployment checks
 

@@ -121,6 +121,8 @@ def restore_job(manifest_key):
     ) as connection:
         counts = restore_database(connection, storage, manifest_key)
     print("Restored rows: " + ", ".join(f"{table}={count}" for table, count in counts.items()))
+    print("Review redacted orders, reconciled stock and suppressed notifications before starting the bot. "
+          "Activity after the selected snapshot may be missing; keep the old bot stopped during validation.")
 
 
 def main():

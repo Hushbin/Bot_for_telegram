@@ -6,6 +6,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from catalog import LEGACY_CATEGORY_LABELS
+from order_store import OrderDB, OrderStoreMixin
+from order_schema import SCHEMA as ORDER_SCHEMA, TABLE_COLUMNS as ORDER_TABLE_COLUMNS
 
 
 ERASED = "[deleted]"
@@ -78,7 +80,10 @@ PRODUCT_COLUMNS = """
 """
 
 
-class SQLiteStore:
+SCHEMA += ORDER_SCHEMA
+
+
+class SQLiteStore(OrderStoreMixin):
     def __init__(self, path):
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -124,6 +129,8 @@ class SQLiteStore:
     def check(self):
         with self.connect() as connection:
             connection.execute("SELECT COUNT(*) FROM users").fetchone()
+            for table, columns in ORDER_TABLE_COLUMNS.items():
+                connection.execute(f"SELECT {', '.join(columns)} FROM {table} WHERE 1 = 0")
 
     def get_user(self, telegram_user_id):
         with self.connect() as connection:
@@ -209,6 +216,12 @@ class SQLiteStore:
     def update_product(self, seller_id, product_id, name, category, description,
                        price_minor, stock_quantity):
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            order_db = OrderDB(connection)
+            try:
+                self.guard_stock(order_db, product_id, seller_id, stock_quantity)
+            finally:
+                order_db.cursor.close()
             cursor = connection.execute("""
                 UPDATE products SET name = ?, category = ?, description = ?,
                        price_minor = ?, stock_quantity = ?
@@ -230,6 +243,12 @@ class SQLiteStore:
 
     def set_stock(self, seller_id, product_id, quantity):
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            order_db = OrderDB(connection)
+            try:
+                self.guard_stock(order_db, product_id, seller_id, quantity)
+            finally:
+                order_db.cursor.close()
             cursor = connection.execute("""
                 UPDATE products SET stock_quantity = ?
                 WHERE product_id = ? AND seller_telegram_user_id = ?
@@ -294,6 +313,7 @@ class SQLiteStore:
         unknown or already erased user returns an empty list.
         """
         with self.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             cursor = connection.execute("""
                 UPDATE users SET full_name = ?, email = ?, phone = ?, phone_verified = 0,
                        role = 'CUSTOMER', preferred_category = NULL,
@@ -307,6 +327,11 @@ class SQLiteStore:
                        business_phone = ?, deleted_at = CURRENT_TIMESTAMP
                 WHERE telegram_user_id = ? AND deleted_at IS NULL
             """, (ERASED, ERASED, ERASED, ERASED, telegram_user_id))
+            order_db = OrderDB(connection)
+            try:
+                self.erase_orders(order_db, telegram_user_id)
+            finally:
+                order_db.cursor.close()
             photos = [(row["photo_object_key"], row["photo_version_id"]) for row in
                       connection.execute("""
                           SELECT photo_object_key, photo_version_id FROM products

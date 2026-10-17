@@ -5,7 +5,8 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
-from recovery import RecoveryStorage, TABLE_COLUMNS, export_database, restore_database
+from recovery import RecoveryStorage, TABLE_COLUMNS, LEGACY_TABLE_COLUMNS, export_database, restore_database
+from unittest.mock import patch
 
 
 class FakeObjectClient:
@@ -57,6 +58,9 @@ class FakeCursor:
             self.result = []
         return self
 
+    def setinputsizes(self, **sizes):
+        pass
+
     def fetchone(self):
         return self.result[0]
 
@@ -97,8 +101,9 @@ class RecoveryTests(unittest.TestCase):
             return tuple(result[column] for column in TABLE_COLUMNS[table])
 
         source = FakeConnection({table: [row(table, 11), row(table, 22)]
-                                 for table in TABLE_COLUMNS})
-        manifest_key = export_database(source, self.storage)
+                                 for table in LEGACY_TABLE_COLUMNS})
+        with patch("recovery.TABLE_COLUMNS", LEGACY_TABLE_COLUMNS), patch("recovery.EXPORT_FORMAT", 1):
+            manifest_key = export_database(source, self.storage)
         self.assertIn("SET TRANSACTION READ ONLY", source.statements)
         self.assertEqual(source.rollbacks, 1)
         self.assertEqual(self.storage.get_json("latest.json")["manifest_key"], manifest_key)
@@ -108,7 +113,7 @@ class RecoveryTests(unittest.TestCase):
         }).encode()
         target = FakeConnection()
         counts = restore_database(target, self.storage, manifest_key)
-        self.assertEqual(counts, {table: 1 for table in TABLE_COLUMNS})
+        self.assertEqual(counts, {table: int(table in LEGACY_TABLE_COLUMNS) for table in TABLE_COLUMNS})
         self.assertEqual([binds.get("telegram_user_id", binds.get("seller_telegram_user_id"))
                           for _, binds in target.inserted], [22, 22, 22])
         self.assertEqual(target.commits, 1)
@@ -129,6 +134,25 @@ class RecoveryTests(unittest.TestCase):
             RuntimeError("listing unavailable"))
         with self.assertRaisesRegex(RuntimeError, "listing unavailable"):
             restore_database(FakeConnection(), self.storage, key)
+
+    def test_schema_change_retries_a_fresh_snapshot_only(self):
+        import oracledb
+        error = oracledb.DatabaseError(SimpleNamespace(code=1466))
+        connection = FakeConnection()
+        with patch("recovery._export_database", side_effect=[error, "exports/test.manifest.json"]) as export, patch("recovery.time.sleep") as pause:
+            self.assertEqual(export_database(connection, self.storage), "exports/test.manifest.json")
+        self.assertEqual(export.call_count, 2)
+        self.assertEqual(connection.rollbacks, 1)
+        pause.assert_called_once_with(2)
+
+    def test_schema_change_retries_are_bounded_and_other_errors_propagate(self):
+        import oracledb
+        for code, expected_calls in ((1466, 4), (942, 1)):
+            error = oracledb.DatabaseError(SimpleNamespace(code=code))
+            with patch("recovery._export_database", side_effect=error) as export, patch("recovery.time.sleep"):
+                with self.assertRaises(oracledb.DatabaseError):
+                    export_database(FakeConnection(), self.storage)
+            self.assertEqual(export.call_count, expected_calls)
 
     def test_old_naive_snapshot_is_treated_as_utc(self):
         manifest_key = export_database(FakeConnection(), self.storage)

@@ -82,9 +82,9 @@ class StoreContract:
     def test_category_filter_matches_the_stored_key_exactly(self):
         self.register(seller=True)
         shirt, painting = self.product(category=CLOTHING), self.product(category=ART)
-        self.assertEqual([p["product_id"] for p in self.store.list_products(category=ART)],
+        self.assertEqual([p["product_id"] for p in self.store.list_products(category=ART, seller_id=self.uid)],
                          [painting])
-        self.assertEqual([p["product_id"] for p in self.store.list_products(category=CLOTHING)],
+        self.assertEqual([p["product_id"] for p in self.store.list_products(category=CLOTHING, seller_id=self.uid)],
                          [shirt])
         self.assertEqual(self.store.list_products(category="Art & Design"), [])
 

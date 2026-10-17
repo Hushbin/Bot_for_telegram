@@ -348,13 +348,15 @@ class PrivacyTests(WiringTestCase):
         notice = (await self.tap(60, "role:buyer"))[0][0]
         self.assertIsNone(self.store.get_user(60))
         for expected in ("What I store", "phone number", "/mydata", "/deleteme",
-                         "until you erase it"):
+                         "until you erase them", "When you confirm an order", "Redacted order IDs"):
             self.assertIn(expected, notice)
         self.assertEqual((await self.say(60, "/privacy"))[0], notice.split("\n\n", 1)[1])
 
     async def test_sellers_are_told_what_is_visible_to_others(self):
         texts, _ = await self.begin(61, "seller")
-        self.assertIn("Other users only see", texts[0])
+        self.assertIn("Product listings are public", texts[0])
+        self.assertIn("name and phone are shared with that seller", texts[0])
+        self.assertIn("Email is not shared", texts[0])
         self.seed_seller(62)
         self.assertIn("visible to other users", (await self.say(62, "/sellerprofile"))[0])
 

@@ -22,7 +22,7 @@ from catalog import LEGACY_CATEGORY_LABELS  # noqa: E402
 
 SCHEMA = "SME_SCHEMA"
 RUNTIME = "SME_BOT"
-TABLES = ("USERS", "SELLERS", "PRODUCTS")
+TABLES = ("USERS", "SELLERS", "PRODUCTS", "ORDERS", "ORDER_NOTIFICATIONS")
 
 
 def password(name: str) -> str:

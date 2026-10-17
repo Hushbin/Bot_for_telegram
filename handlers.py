@@ -23,26 +23,32 @@ MAX_PHOTO_BYTES = 5 * 1024 * 1024
 PRIVACY_NOTICE = (
     "What I store about you:\n"
     "- buyers: your Telegram ID, name, email, phone number (and whether Telegram "
-    "verified it), and your role. A preferred category is stored only if you choose one;\n"
-    "- sellers: the same account contact details, plus a listing name, location, "
-    "seller contact email and phone number, and products with photos. Your account "
-    "email and phone are reused for seller contact unless you provide different ones.\n\n"
-    "Who can see it: the bot's operator. Other users only see what sellers list: "
-    "the listing name, product names, descriptions, prices, stock and photos. "
-    "Names used as listing names are public; emails, locations and phone numbers "
-    "are not shown to other users.\n\n"
-    "How long: live data stays until you erase it. Daily recovery exports are "
-    "kept for seven days; OCI may take another day to finish deleting expired "
-    "objects. Oracle also retains managed database backups for up to 60 days.\n\n"
-    "Your controls: /mydata shows what is stored. /deleteme removes your personal "
-    "data, seller profile, products and photos from the live service. Backup "
-    "copies expire on the schedule above; a restore applies erasure records first. "
-    "Only your numeric Telegram ID and the time of erasure are kept afterward."
+    "verified it), role and optional category preference;\n"
+    "- sellers: account details, listing name, location, seller contact details, "
+    "and products with photos;\n"
+    "- orders: buyer and seller IDs, product and listing names, quantity, confirmed "
+    "price, buyer name and phone snapshot, consent version, status and notification delivery.\n\n"
+    "Who can see it: the bot operator sees stored data. Product listings are public. "
+    "When you confirm an order, your name and phone are shared with that seller, "
+    "as shown on the confirmation screen. Email is not shared. Order details are "
+    "visible only to the participating buyer and seller. Seller contact details "
+    "are not automatically shared.\n\n"
+    "How long: live profiles and order contact snapshots stay until you erase them. "
+    "Daily recovery exports are kept for seven days (OCI deletion may take another day); "
+    "managed database backups can last up to 60 days.\n\n"
+    "Your controls: /mydata shows stored data; /orders and /sales show order details. "
+    "/deleteme erases your personal data, listing and photos, scrubs your order "
+    "snapshots and cancels open orders. Redacted order IDs, numeric participant IDs, "
+    "quantities, prices, statuses and timestamps remain for stock and history consistency. "
+    "A restore honors erasure records. Copies already delivered to another person's "
+    "Telegram chat, including a send during erasure, cannot reliably be recalled."
 )
 SELLER_NOTICE = (
-    "Your listing name and products are visible to other users. The location, email "
-    "and phone are stored for the bot operator and are not shown to other users. "
-    "If you use your own name as the listing name, that name will be public."
+    "Your listing name and products are visible to other users. Your location, seller email and "
+    "phone are not automatically shared. Confirming a purchase shares your buyer "
+    "name and phone with that seller. Incoming orders show the buyer's confirmed "
+    "name and phone; use them only to arrange that order. If you use your own "
+    "name as the listing name, that name will be public."
 )
 BUSINESS_PROMPT = (
     "Choose a listing name: a shop name, nickname or your own name. You do not need "
@@ -239,6 +245,8 @@ def menu_buttons():
          InlineKeyboardButton("Add photo", callback_data="menu:photo")],
         [InlineKeyboardButton("Update stock", callback_data="menu:stock"),
          InlineKeyboardButton("Categories", callback_data="menu:preferences")],
+        [InlineKeyboardButton("My orders", callback_data="menu:orders"),
+         InlineKeyboardButton("Incoming orders", callback_data="menu:sales")],
         [InlineKeyboardButton("Privacy", callback_data="menu:privacy"),
          InlineKeyboardButton("Erase my data", callback_data="menu:deleteme")],
         [InlineKeyboardButton("Start / welcome", callback_data="menu:start")],
@@ -254,10 +262,12 @@ def browse_buttons():
 
 
 class BotHandlers:
-    def __init__(self, store, media, erasures=None):
+    def __init__(self, store, media, erasures=None, orders_enabled=False):
         self.store = store
         self.media = media
         self.erasures = erasures
+        from order_handlers import OrderHandlers
+        self.order_handlers = OrderHandlers(self, orders_enabled)
 
     async def run(self, operation, *args):
         return await asyncio.to_thread(operation, *args)
@@ -283,7 +293,7 @@ class BotHandlers:
         """Forget the half-finished input of whatever flow the user was in."""
         for key in ("last_input", "draft", "pending_product_id",
                     "pending_product_number", "signup_role",
-                    "phone_keyboard_active"):
+                    "phone_keyboard_active", "order_after_signup", "order_product_id", "order_draft"):
             context.user_data.pop(key, None)
 
     @staticmethod
@@ -334,6 +344,7 @@ class BotHandlers:
         if not last or last["id"] != message.message_id:
             return None
         step = {
+            "order_quantity": self.order_handlers.quantity,
             "contact": self.choose,
             "phone": self.phone_text,
             "business": self.seller_details,
@@ -360,6 +371,11 @@ class BotHandlers:
             )
             return
         await update.effective_message.reply_text(stored_data_text(user, seller, products))
+        await update.effective_message.reply_text(
+            "Order snapshots and consent records: use /orders for your purchases and "
+            "/sales for incoming orders, then open each order. Your confirmed name and "
+            "phone, price, quantity and status are retained until account erasure; "
+            "redacted commercial history remains afterward.")
 
     async def delete_me(self, update, context):
         await self.hide_phone_keyboard(update, context)
@@ -380,8 +396,9 @@ class BotHandlers:
             "This removes your name, email, phone, seller profile, products and "
             "photos from the live service. Recovery exports expire after seven days "
             "(OCI deletion may take another day); managed database backups can last "
-            "up to 60 days. A restore will honor this erasure. Only your numeric "
-            "Telegram ID and erasure time are kept. Continue?",
+            "up to 60 days. A restore will honor this erasure. Open orders are cancelled "
+            "and your order contacts are scrubbed. Redacted order history remains; "
+            "copies delivered in Telegram cannot reliably be recalled. Continue?",
             reply_markup=buttons,
         )
         return CONFIRM_ERASE
@@ -481,6 +498,8 @@ class BotHandlers:
             )
             return STOCK_INPUT
         actions = {
+            "orders": self.order_handlers.purchases,
+            "sales": self.order_handlers.sales,
             "start": self.start,
             "profile": self.profile,
             "sellerprofile": self.seller_profile,
@@ -561,7 +580,8 @@ class BotHandlers:
         await update.effective_message.reply_text(
             "Update your account contact details. Send your full name and email "
             "separated by a comma. Example: Jane Doe, jane@example.com. "
-            "The bot operator can see these details; other users cannot. "
+            "The operator sees these details. A seller receives your name and phone "
+            "only when you confirm an order. Existing orders keep their confirmed contact snapshot. "
             "You can update your seller listing separately with /sellerprofile."
         )
         return CHOOSING
@@ -608,8 +628,8 @@ class BotHandlers:
         context.user_data["draft"] = {"name": name, "email": email}
         context.user_data["phone_keyboard_active"] = True
         await message.reply_text(
-            f"Thanks, {name}. Now your account phone number. Only the bot operator "
-            "can see it. Tap the button to share the number "
+            f"Thanks, {name}. Now your account phone number. The bot operator can see it; "
+            "a seller also receives it if you later confirm an order. Tap the button to share the number "
             "verified by Telegram, or type a different number, for example +1234567890. "
             "If you see the typing keyboard instead, tap the keyboard icon beside the "
             "message field to show the share button.",
@@ -671,6 +691,8 @@ class BotHandlers:
             )
             return SME_DETAILS
         if role == "CUSTOMER":
+            if context.user_data.get("order_after_signup") is not None:
+                return await self.order_handlers.resume_signup(update, context)
             await message.reply_text(
                 f"Thanks, {draft['name']}. Your buyer profile is ready. "
                 "Use /menu to explore the bot.", reply_markup=menu_buttons(),
@@ -689,15 +711,18 @@ class BotHandlers:
                 "role:customer": "CUSTOMER"}.get(query.data)
         if role is None:
             return CLASS_STATE
+        order_intent = context.user_data.get("order_after_signup")
         self.reset_flow(context)
+        if order_intent is not None:
+            context.user_data["order_after_signup"] = order_intent
         context.user_data["signup_role"] = role
         await query.message.reply_text(
             ("Seller" if role == "SELLER" else "Buyer") + " privacy notice:\n\n" + PRIVACY_NOTICE
         )
         await query.message.reply_text(
             "First, your account contact details. Send your full name and email "
-            "separated by a comma. The bot operator can see these details; "
-            "other users cannot.\nExample: Jane Doe, jane@example.com\n"
+            "separated by a comma. The operator sees these details; a seller receives "
+            "your name and phone only when you confirm an order.\nExample: Jane Doe, jane@example.com\n"
             "Use /cancel to stop."
         )
         return CHOOSING
@@ -729,6 +754,8 @@ class BotHandlers:
             else "Seller profile saved. Use /menu to list your first product.",
             reply_markup=menu_buttons() if not corrected else None,
         )
+        if context.user_data.get("order_after_signup") is not None:
+            return await self.order_handlers.resume_signup(update, context)
         return ConversationHandler.END
 
     async def preference(self, update, context):
@@ -960,12 +987,14 @@ class BotHandlers:
             product, detail=True,
             seller_view=product["seller_telegram_user_id"] == update.effective_user.id,
         )
+        buttons = self.order_handlers.product_buttons(product, update.effective_user.id)
+        options = {"reply_markup": buttons} if buttons else {}
         if not product["photo_object_key"]:
-            await update.effective_message.reply_text(caption)
+            await update.effective_message.reply_text(caption, **options)
             return
         try:
             raw = await self.run(self.media.get_photo, product["photo_object_key"])
-            await update.effective_message.reply_photo(photo=io.BytesIO(raw), caption=caption)
+            await update.effective_message.reply_photo(photo=io.BytesIO(raw), caption=caption, **options)
         except Exception:
             await self.failure(update)
 

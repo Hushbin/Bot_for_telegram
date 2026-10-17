@@ -13,6 +13,8 @@ from telegram.ext import (
 )
 
 from config import load_settings
+from order_handlers import ORDER_ID, ORDER_QUANTITY, ORDER_CONFIRM
+from order_worker import OrderWorker
 from handlers import (
     BotHandlers, CHOOSING, CLASS_STATE, SME_DETAILS, CHOOSE_PREF,
     PRODUCT_DETAILS, PRODUCT_PHOTO, PHONE, CONFIRM_ERASE, PRODUCT_ID, PHOTO_ID,
@@ -35,7 +37,7 @@ PRIVATE_EDITED_TEXT = (filters.UpdateType.EDITED_MESSAGE & filters.ChatType.PRIV
 BOT_COMMANDS = (
     "menu", "start", "profile", "sellerprofile", "preferences", "addproduct",
     "photo", "products", "product", "myproducts", "stock", "privacy",
-    "mydata", "deleteme", "cancel", "skip",
+    "mydata", "deleteme", "cancel", "skip", "order", "orders", "sales",
 )
 
 COMMAND_DESCRIPTIONS = (
@@ -50,6 +52,9 @@ COMMAND_DESCRIPTIONS = (
     ("photo", "Add a photo to a product"),
     ("myproducts", "See your listings"),
     ("stock", "Change product stock"),
+    ("order", "Order a product"),
+    ("orders", "See my orders"),
+    ("sales", "See incoming orders"),
     ("privacy", "Read the privacy notice"),
     ("mydata", "See your stored data"),
     ("deleteme", "Erase your data"),
@@ -106,14 +111,34 @@ def build_application(settings=None, store=None, media=None):
                                    config_file=settings.oci_config_file,
                                    profile=settings.oci_profile)
     store.check()
-    handlers = BotHandlers(store, media, erasures)
+    handlers = BotHandlers(store, media, erasures, getattr(settings, "orders_enabled", False))
+    orders = handlers.order_handlers
+    worker_holder = {}
+
+    async def start_runtime(application):
+        await register_command_menu(application)
+        worker = OrderWorker(store, application.bot)
+        worker_holder["worker"] = worker
+        worker.start()
+
+    async def stop_runtime(application):
+        worker = worker_holder.get("worker")
+        if worker is not None:
+            await worker.stop()
+
     application = (ApplicationBuilder().token(settings.bot_token)
-                   .concurrent_updates(False).post_init(register_command_menu).build())
+                   .concurrent_updates(False).post_init(start_runtime)
+                   .post_stop(stop_runtime).post_shutdown(stop_runtime).build())
+    application.add_handler(CallbackQueryHandler(
+        orders.durable_action, pattern=r"^(ord|hist):"), group=-1)
 
     # One conversation for every multi-step flow. A user can only be in one state at a
     # time, any entry command replaces the current state, and one /cancel clears it.
     conversation = ConversationHandler(
         entry_points=[
+            CommandHandler("order", orders.start, filters=PRIVATE_COMMAND),
+            CallbackQueryHandler(orders.start, pattern=r"^buy:"),
+            CallbackQueryHandler(orders.confirm, pattern=r"^(confirm|discard):[0-9a-f]{32}$"),
             CommandHandler("menu", handlers.menu, filters=PRIVATE_COMMAND),
             CallbackQueryHandler(handlers.menu_action, pattern=r"^menu:"),
             CommandHandler("start", handlers.start, filters=PRIVATE_COMMAND),
@@ -127,6 +152,12 @@ def build_application(settings=None, store=None, media=None):
             CommandHandler("deleteme", handlers.delete_me, filters=PRIVATE_COMMAND),
         ],
         states={
+            ORDER_ID: [MessageHandler(PRIVATE_TEXT, orders.product_id),
+                       *with_hint(handlers, "Please send a catalog ID.")],
+            ORDER_QUANTITY: [MessageHandler(PRIVATE_TEXT | PRIVATE_EDITED_TEXT, orders.quantity),
+                             *with_hint(handlers, "Please send a quantity.")],
+            ORDER_CONFIRM: [MessageHandler(PRIVATE_EDITED_TEXT, orders.quantity),
+                            *with_hint(handlers, "Please confirm the order above or /cancel.")],
             CHOOSING: [
                 MessageHandler(PRIVATE_TEXT, handlers.choose),
                 *with_hint(handlers, "Please send your full name and email separated by a comma."),
@@ -186,6 +217,8 @@ def build_application(settings=None, store=None, media=None):
     )
     application.add_handler(conversation)
     for name, callback in (
+        ("orders", orders.purchases),
+        ("sales", orders.sales),
         ("products", handlers.products),
         ("myproducts", handlers.my_products),
         ("privacy", handlers.privacy),
