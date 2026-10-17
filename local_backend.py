@@ -7,6 +7,7 @@ from uuid import uuid4
 
 from catalog import LEGACY_CATEGORY_LABELS
 from order_store import OrderDB, OrderStoreMixin
+from seller_store import SellerStoreMixin
 from order_schema import SCHEMA as ORDER_SCHEMA, TABLE_COLUMNS as ORDER_TABLE_COLUMNS
 
 
@@ -83,7 +84,7 @@ PRODUCT_COLUMNS = """
 SCHEMA += ORDER_SCHEMA
 
 
-class SQLiteStore(OrderStoreMixin):
+class SQLiteStore(SellerStoreMixin, OrderStoreMixin):
     def __init__(self, path):
         self.path = Path(path).expanduser()
         self.path.parent.mkdir(parents=True, exist_ok=True)

@@ -3,6 +3,7 @@
 import oracledb
 
 from order_store import OrderDB, OrderStoreMixin
+from seller_store import SellerStoreMixin
 from order_schema import TABLE_COLUMNS as ORDER_TABLE_COLUMNS
 
 
@@ -23,7 +24,7 @@ def row_dict(cursor, row):
     return {column[0].lower(): value for column, value in zip(cursor.description, row)}
 
 
-class OracleStore(OrderStoreMixin):
+class OracleStore(SellerStoreMixin, OrderStoreMixin):
     def __init__(self, settings):
         self.schema = getattr(settings, "db_schema", None) or SCHEMA
         self.connection_args = dict(

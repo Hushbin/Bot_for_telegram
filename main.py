@@ -37,7 +37,7 @@ PRIVATE_EDITED_TEXT = (filters.UpdateType.EDITED_MESSAGE & filters.ChatType.PRIV
 BOT_COMMANDS = (
     "menu", "start", "profile", "sellerprofile", "preferences", "addproduct",
     "photo", "products", "product", "myproducts", "stock", "privacy",
-    "mydata", "deleteme", "cancel", "skip", "order", "orders", "sales",
+    "mydata", "deleteme", "cancel", "skip", "order", "orders", "sales", "panel",
 )
 
 COMMAND_DESCRIPTIONS = (
@@ -55,6 +55,7 @@ COMMAND_DESCRIPTIONS = (
     ("order", "Order a product"),
     ("orders", "See my orders"),
     ("sales", "See incoming orders"),
+    ("panel", "Open the seller web panel"),
     ("privacy", "Read the privacy notice"),
     ("mydata", "See your stored data"),
     ("deleteme", "Erase your data"),
@@ -114,14 +115,35 @@ def build_application(settings=None, store=None, media=None):
     handlers = BotHandlers(store, media, erasures, getattr(settings, "orders_enabled", False))
     orders = handlers.order_handlers
     worker_holder = {}
+    panel = None
+    if getattr(settings, 'seller_panel_url', ''):
+        from seller_api import SellerRuntime
+        panel = SellerRuntime(store, settings.seller_panel_url, settings.seller_api_port,
+                              settings.orders_enabled)
+
+    async def start_command(update, context):
+        if panel and context.args == ['seller_panel']:
+            return await panel.panel(update, context)
+        return await handlers.start(update, context)
+
+    async def panel_command(update, context):
+        if panel:
+            handlers.reset_flow(context)
+            return await panel.panel(update, context)
+        await update.effective_message.reply_text('The seller panel is not configured yet.')
+        return ConversationHandler.END
 
     async def start_runtime(application):
         await register_command_menu(application)
+        if panel:
+            await panel.start(application)
         worker = OrderWorker(store, application.bot)
         worker_holder["worker"] = worker
         worker.start()
 
     async def stop_runtime(application):
+        if panel:
+            await panel.stop()
         worker = worker_holder.get("worker")
         if worker is not None:
             await worker.stop()
@@ -141,7 +163,8 @@ def build_application(settings=None, store=None, media=None):
             CallbackQueryHandler(orders.confirm, pattern=r"^(confirm|discard):[0-9a-f]{32}$"),
             CommandHandler("menu", handlers.menu, filters=PRIVATE_COMMAND),
             CallbackQueryHandler(handlers.menu_action, pattern=r"^menu:"),
-            CommandHandler("start", handlers.start, filters=PRIVATE_COMMAND),
+            CommandHandler("start", start_command, filters=PRIVATE_COMMAND),
+            CommandHandler("panel", panel_command, filters=PRIVATE_COMMAND),
             CommandHandler("profile", handlers.profile, filters=PRIVATE_COMMAND),
             CommandHandler("sellerprofile", handlers.seller_profile, filters=PRIVATE_COMMAND),
             CommandHandler("preferences", handlers.preferences, filters=PRIVATE_COMMAND),

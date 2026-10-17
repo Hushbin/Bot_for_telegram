@@ -32,6 +32,8 @@ class Settings:
     local_db_path: str
     local_media_dir: str
     orders_enabled: bool = False
+    seller_panel_url: str = ''
+    seller_api_port: int = 8081
 
 
 def load_settings() -> Settings:
@@ -82,6 +84,8 @@ def load_settings() -> Settings:
     return Settings(
         backend=backend,
         orders_enabled=orders_enabled == "true",
+        seller_panel_url=os.getenv('SELLER_PANEL_URL', '').rstrip('/'),
+        seller_api_port=int(os.getenv('SELLER_API_PORT', '8081')),
         bot_token=secrets["BOT_TOKEN"],
         db_dsn=os.getenv("DB_DSN", ""),
         db_wallet_dir=os.getenv("DB_WALLET_DIR", ""),

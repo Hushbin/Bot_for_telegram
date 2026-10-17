@@ -200,3 +200,7 @@ Set these environment variables (GitHub **vars**):
 The infrastructure repository manages the CI IAM policy and persistent Bastion. The deployment identity needs network read access and the tested Bastion/session permissions; network-management and Bastion create/delete grants are unnecessary. The Bastion subnet permits outbound TCP 22 only to the bot VM. The workflow changes the Bastion allowlist to the current runner's `/32` before creating a one-hour session. Its update permission also permits changing the Bastion's session lifetime; the script requires 3,600 seconds and Terraform owns that setting. OCI [documents Bastion as free](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm), though service limits still apply.
 
 If a runner is killed before cleanup, the next serialized deployment removes leftover `deploy<run-id>a<attempt>` sessions. Unknown session names block deployment for operator investigation. Cleanup failures fail the job and require checking session deletion and the idle allowlist; they do not revert a healthy release. Sessions expire after one hour. Changing the allowlist does not revoke existing sessions, so operators must explicitly delete a stranded session or wait for expiry. Keep this Bastion dedicated to the deployment workflow.
+
+## Seller web panel
+
+Sellers can manage their catalog and orders in the [web panel](https://144.24.232.0). Send `/panel` in a private chat for a sign-in link. See [configuration and API details](docs/SELLER_PANEL.md).

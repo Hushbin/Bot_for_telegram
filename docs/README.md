@@ -15,3 +15,5 @@ Infrastructure resources, backup operations and secret rotation are documented i
 Keep current guides and unresolved work here. Completed implementation plans and
 superseded migration drafts are available in Git history rather than maintained
 as competing instructions. `README.md` and `AGENTS.md` remain at the repository root.
+
+- [Seller web panel](SELLER_PANEL.md): authentication, API, configuration and deployment.
