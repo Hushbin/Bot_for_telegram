@@ -63,3 +63,5 @@ saved before their optional photo; if uploading fails, the editor retains the
 saved ID and selected photo so retrying cannot create another product.
 
 Photo validation, 17 October 2026: 256 offline tests passed (43 optional Oracle tests skipped). The photo attach/replace SQL, owner checks, stale-upload rejection and Telegram overwrite protection also passed in a disposable Oracle schema; its runtime was denied production access, and the temporary identities were removed.
+
+Chrome UI verification on 17 October 2026 used fictional loopback-only fixture data: existing photo preview, full-size link, native file selection, local preview and saving a replacement PNG all worked. No production product was used as a write fixture.
