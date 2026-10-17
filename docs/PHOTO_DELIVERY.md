@@ -94,6 +94,13 @@ columns. Business-data fingerprints were unchanged, existing caches were empty,
 and a second migration was a no-op. The runtime account could read the columns.
 [CI run 39050268632](https://github.com/Hushbin/Bot_for_telegram/actions/runs/39050268632)
 successfully deployed application release `aa07025`. Bot service, Telegram,
-database, fresh-backup and public seller API health checks passed. The owner chat
-check of first versus repeat views remains pending; automated tests did not send
-Telegram messages or use production products as write fixtures.
+database, fresh-backup and public seller API health checks passed. Automated tests
+did not send Telegram messages or use production products as write fixtures.
+
+The owner completed the live first/repeat-view check on 17 October 2026 and
+reported both views were fast, with the second a little faster. Production timing
+logs confirmed a cache miss, a 52.4 ms storage download and a confirmed 217.9 ms
+Telegram upload for product 21. Its repeat view was a cache hit with a confirmed
+71.9 ms Telegram send and no storage download. Database lookup times were 75.7 ms
+and 77.4 ms respectively. Restart persistence was verified by automated database
+reopen/application rebuild tests; the live check did not restart the bot.
