@@ -12,10 +12,11 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from orders import OrderError
+from product_photos import MAX_PHOTO_BYTES, prepare_photo
 
 COOKIE = '__Host-smebot'
 SESSION_SECONDS = 8 * 60 * 60
@@ -79,13 +80,20 @@ def iso(value):
     return value.isoformat() if isinstance(value, datetime) else value
 
 
+def photo_revision(product):
+    key = product.get('photo_object_key')
+    return hashlib.sha256((key + ':' + str(product.get('photo_version_id') or '')).encode()).hexdigest() if key else 'none'
+
+
 def panel_state(snapshot, orders_enabled):
     seller, user = snapshot['seller'], snapshot['user']
     uid = int(user['telegram_user_id'])
     products = [dict(id=int(p['product_id']), seller_id=uid, name=p['name'],
                      category=p['category'], description=p['description'] or '',
                      price_minor=int(p['price_minor']), stock_quantity=int(p['stock_quantity']),
-                     currency=p['currency'], visibility='active') for p in snapshot['products']]
+                     currency=p['currency'], visibility='active',
+                     photo_url=f"/api/products/{int(p['product_id'])}/photo" if p.get('photo_object_key') else None,
+                     photo_revision=photo_revision(p)) for p in snapshot['products']]
     orders = []
     for o in snapshot['orders']:
         orders.append(dict(
@@ -103,7 +111,7 @@ def panel_state(snapshot, orders_enabled):
                 lowStock=5, orders_enabled=orders_enabled)
 
 
-def create_api(store, sessions, origin, bot_username, orders_enabled=True):
+def create_api(store, sessions, origin, bot_username, orders_enabled=True, media=None):
     if urlsplit(origin).scheme != 'https' or urlsplit(origin).path not in ('', '/'):
         raise ValueError('SELLER_PANEL_URL must be an HTTPS origin without a path.')
     origin = origin.rstrip('/')
@@ -156,14 +164,15 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True):
             snapshot = await asyncio.to_thread(store.seller_snapshot, uid)
             if path == '/api/state':
                 return JSONResponse(panel_state(snapshot, orders_enabled))
+            saved_product_id = None
             if path == '/api/products':
-                await asyncio.to_thread(store.save_seller_product, uid, data)
+                saved_product_id = await asyncio.to_thread(store.save_seller_product, uid, data)
             elif path.startswith('/api/products/'):
                 pid = int(request.path_params['pid'])
                 if request.method == 'DELETE':
                     await asyncio.to_thread(store.remove_seller_product, uid, pid)
                 else:
-                    await asyncio.to_thread(store.save_seller_product, uid, data, pid)
+                    saved_product_id = await asyncio.to_thread(store.save_seller_product, uid, data, pid)
             elif path == '/api/profile':
                 await asyncio.to_thread(store.save_seller_profile, uid, data)
             elif path.startswith('/api/orders/'):
@@ -182,7 +191,10 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True):
                     raise OrderError('conflict', 'This action is no longer available.')
                 await asyncio.to_thread(store.change_order, oid, uid, action, data['version'])
             snapshot = await asyncio.to_thread(store.seller_snapshot, uid)
-            return JSONResponse(panel_state(snapshot, orders_enabled))
+            result = panel_state(snapshot, orders_enabled)
+            if saved_product_id is not None:
+                result['saved_product_id'] = int(saved_product_id)
+            return JSONResponse(result)
         except OrderError as exc:
             status = {'permission': 403, 'missing': 404, 'conflict': 409, 'stock': 409}.get(exc.code, 400)
             return JSONResponse({'error': str(exc)}, status)
@@ -190,7 +202,76 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True):
             logging.getLogger(__name__).exception('Seller API operation failed')
             return JSONResponse({'error': 'The store is temporarily unavailable. Please try again.'}, 503)
 
-    routes = [Route(path, endpoint, methods=methods) for path, methods in (
+    photo_slots = asyncio.Semaphore(2)
+
+    async def photo_endpoint(request):
+        uid = sessions.user(request.cookies.get(COOKIE, ''))
+        if uid is None:
+            return JSONResponse({'error': 'Sign in through the bot to open your store.'}, 401)
+        uploading = request.method == 'PUT'
+        if uploading and (request.headers.get('origin') != origin or
+                          request.headers.get('content-type', '').split(';')[0] not in ('image/jpeg', 'image/png')):
+            return JSONResponse({'error': 'Use a JPEG or PNG upload from the seller panel.'}, 403)
+        try:
+            async with photo_slots:
+                snapshot = await asyncio.to_thread(store.seller_snapshot, uid)
+                pid = int(request.path_params['pid'])
+                product = next((p for p in snapshot['products'] if p['product_id'] == pid), None)
+                if product is None:
+                    raise OrderError('missing', 'Product not found.')
+                if media is None:
+                    raise RuntimeError('Photo storage is not configured')
+                if not uploading:
+                    key = product.get('photo_object_key')
+                    if not key:
+                        raise OrderError('missing', 'This product has no photo yet.')
+                    raw = await asyncio.to_thread(media.get_photo, key)
+                    content_type = 'image/png' if raw.startswith(b'\x89PNG\r\n\x1a\n') else 'image/jpeg'
+                    return Response(raw, media_type=content_type)
+                if request.headers.get('if-match') != photo_revision(product):
+                    raise OrderError('conflict', 'The photo changed. Reopen the product before uploading again.')
+                raw = bytearray()
+                async for chunk in request.stream():
+                    raw.extend(chunk)
+                    if len(raw) > MAX_PHOTO_BYTES:
+                        return JSONResponse({'error': 'Choose a photo up to 5 MB.'}, 413)
+                try:
+                    prepared = await asyncio.to_thread(prepare_photo, raw)
+                except ValueError as exc:
+                    return JSONResponse({'error': str(exc)}, 400)
+
+                def save_photo():
+                    # Run upload + attach + compensation in one worker. A disconnected
+                    # browser cannot cancel the database attach halfway through.
+                    key, version = media.put_product_photo(uid, pid, prepared)
+                    try:
+                        previous = store.replace_seller_product_photo(
+                            uid, pid, key, version, product.get('photo_object_key'))
+                    except Exception:
+                        try:
+                            media.delete_photo(key, version)
+                        except Exception:
+                            logging.getLogger(__name__).exception('Could not remove unattached seller photo')
+                        raise
+                    if previous[0]:
+                        try:
+                            media.delete_photo(*previous)
+                        except Exception:
+                            logging.getLogger(__name__).exception('Could not remove replaced seller photo')
+
+                await asyncio.to_thread(save_photo)
+                snapshot = await asyncio.to_thread(store.seller_snapshot, uid)
+                return JSONResponse(panel_state(snapshot, orders_enabled))
+        except OrderError as exc:
+            return JSONResponse({'error': str(exc)}, {'permission': 403, 'missing': 404, 'conflict': 409}.get(exc.code, 400))
+        except FileNotFoundError:
+            return JSONResponse({'error': 'The photo is unavailable. Upload it again.'}, 404)
+        except Exception:
+            logging.getLogger(__name__).exception('Seller photo operation failed')
+            return JSONResponse({'error': 'Photo storage is temporarily unavailable. Please try again.'}, 503)
+
+    routes = [Route('/api/products/{pid:int}/photo', photo_endpoint, methods=['GET', 'PUT'])]
+    routes += [Route(path, endpoint, methods=methods) for path, methods in (
         ('/api/health', ['GET']), ('/api/config', ['GET']), ('/api/session', ['POST']),
         ('/api/logout', ['POST']), ('/api/state', ['GET']), ('/api/products', ['POST']),
         ('/api/products/{pid:int}', ['PUT', 'DELETE']), ('/api/profile', ['PUT']),
@@ -205,9 +286,10 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True):
 
 
 class SellerRuntime:
-    def __init__(self, store, origin, port, orders_enabled):
+    def __init__(self, store, origin, port, orders_enabled, media=None):
         self.store, self.origin, self.port = store, origin.rstrip('/'), port
         self.orders_enabled = orders_enabled
+        self.media = media
         self.sessions = SellerSessions()
         self.server = self.task = None
 
@@ -237,7 +319,7 @@ class SellerRuntime:
                 yield
 
         api = create_api(self.store, self.sessions, self.origin, application.bot.username,
-                         self.orders_enabled)
+                         self.orders_enabled, media=self.media)
         self.server = EmbeddedServer(uvicorn.Config(api, host='127.0.0.1', port=self.port,
                                                    access_log=False, log_level='warning',
                                                    proxy_headers=False))

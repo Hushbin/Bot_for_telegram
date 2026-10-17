@@ -212,6 +212,7 @@ class OracleStore(SellerStoreMixin, OrderStoreMixin):
                     WHERE product_id = :product_id
                       AND seller_telegram_user_id = :seller_id
                       AND deleted_at IS NULL
+                      AND photo_object_key IS NULL
                 """, object_key=object_key, version_id=version_id,
                     product_id=product_id, seller_id=seller_id)
                 if cursor.rowcount != 1:

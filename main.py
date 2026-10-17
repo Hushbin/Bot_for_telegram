@@ -119,7 +119,7 @@ def build_application(settings=None, store=None, media=None):
     if getattr(settings, 'seller_panel_url', ''):
         from seller_api import SellerRuntime
         panel = SellerRuntime(store, settings.seller_panel_url, settings.seller_api_port,
-                              settings.orders_enabled)
+                              settings.orders_enabled, media=media)
 
     async def start_command(update, context):
         if panel and context.args == ['seller_panel']:

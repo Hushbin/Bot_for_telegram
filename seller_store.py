@@ -4,6 +4,22 @@ from orders import OrderError
 
 
 class SellerStoreMixin:
+    def replace_seller_product_photo(self, uid, pid, object_key, version_id, expected_key):
+        """Attach an uploaded photo only if the live account/product still matches."""
+        with self.order_transaction(True) as db:
+            db.accounts(uid)
+            if not self._live(db, 'users', uid) or not self._live(db, 'sellers', uid):
+                raise OrderError('permission', 'Register as a seller in the bot first.')
+            product = self._product(db, pid, lock=True)
+            if not product or product['seller_telegram_user_id'] != uid or product['deleted_at']:
+                raise OrderError('missing', 'Product not found.')
+            if product['photo_object_key'] != expected_key:
+                raise OrderError('conflict', 'The photo changed. Reopen the product before uploading again.')
+            db.execute(f"UPDATE {db.table('products')} SET photo_object_key = :object_key, "
+                       'photo_version_id = :version_id WHERE product_id = :pid',
+                       object_key=object_key, version_id=version_id, pid=pid)
+            return product['photo_object_key'], product['photo_version_id']
+
     def seller_snapshot(self, uid):
         with self.order_transaction() as db:
             user = self._live(db, 'users', uid)

@@ -238,6 +238,7 @@ class SQLiteStore(SellerStoreMixin, OrderStoreMixin):
                 UPDATE products SET photo_object_key = ?, photo_version_id = ?
                 WHERE product_id = ? AND seller_telegram_user_id = ?
                   AND deleted_at IS NULL
+                  AND photo_object_key IS NULL
             """, (object_key, version_id, product_id, seller_id))
             if cursor.rowcount != 1:
                 raise LookupError("Product not found for this seller")

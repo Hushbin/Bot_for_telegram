@@ -1,11 +1,21 @@
 """Real SQLite seller API authorization, authentication and stock mutation tests."""
 import tempfile
+import io
 from pathlib import Path
 import unittest
 from uuid import uuid4
+from unittest.mock import patch
 import httpx
-from local_backend import SQLiteStore
+from PIL import Image
+from local_backend import SQLiteStore, LocalMediaStorage
+from product_photos import prepare_photo, MAX_PHOTO_BYTES
 from seller_api import COOKIE, SellerSessions, create_api
+
+
+def image_bytes(format='PNG', size=(32, 24), **options):
+    output = io.BytesIO()
+    Image.new('RGB', size, 'orange').save(output, format=format, **options)
+    return output.getvalue()
 
 
 class SessionTests(unittest.TestCase):
@@ -33,6 +43,7 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.store = SQLiteStore(Path(temp.name) / 'db.sqlite')
+        self.media = LocalMediaStorage(Path(temp.name) / 'media')
         for uid in (1, 2, 3):
             self.store.upsert_user(uid, f'User {uid}', 'u@example.com', '+1234567890')
         for uid in (1, 2):
@@ -40,7 +51,7 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
         self.pid = self.store.create_product(1, 'Shirt', 'clothing', 'Cotton', 1999, 5)
         self.other_pid = self.store.create_product(2, 'Other', 'art', '', 100, 5)
         self.sessions = SellerSessions()
-        app = create_api(self.store, self.sessions, 'https://seller.test', 'test_bot')
+        app = create_api(self.store, self.sessions, 'https://seller.test', 'test_bot', media=self.media)
         self.client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
             base_url='https://seller.test', headers={'Origin': 'https://seller.test'})
         self.addAsyncCleanup(self.client.aclose)
@@ -141,3 +152,107 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.post('/api/logout', json={})).status_code, 200)
         self.assertIsNone(self.sessions.user(old))
         self.assertEqual((await self.client.get('/api/state')).status_code, 401)
+
+    async def upload(self, raw=None, revision='none', pid=None, **headers):
+        return await self.client.put(f'/api/products/{pid or self.pid}/photo',
+                                     content=image_bytes() if raw is None else raw,
+                                     headers={'Content-Type': 'image/png', 'If-Match': revision, **headers})
+
+    async def test_upload_is_shared_with_bot_and_authenticated_preview(self):
+        response = await self.upload()
+        self.assertEqual(response.status_code, 200)
+        product = response.json()['products'][0]
+        self.assertEqual(product['photo_url'], f'/api/products/{self.pid}/photo')
+        self.assertNotEqual(product['photo_revision'], 'none')
+        self.assertNotIn('photo_object_key', product)
+        preview = await self.client.get(product['photo_url'])
+        self.assertEqual(preview.status_code, 200)
+        self.assertEqual(preview.headers['content-type'], 'image/jpeg')
+        self.assertEqual(preview.headers['cache-control'], 'no-store')
+        stored = self.store.get_product(self.pid)
+        self.assertEqual(preview.content, self.media.get_photo(stored['photo_object_key']))
+        with Image.open(io.BytesIO(preview.content)) as image:
+            self.assertEqual(image.size, (32, 24))
+        self.client.cookies.clear()
+        self.assertEqual((await self.client.get(product['photo_url'])).status_code, 401)
+        self.assertEqual((await self.upload()).status_code, 401)
+
+    async def test_replace_cleans_old_version_and_rejects_stale_upload(self):
+        first = await self.upload()
+        revision = first.json()['products'][0]['photo_revision']
+        old_key = self.store.get_product(self.pid)['photo_object_key']
+        second = await self.upload(image_bytes('JPEG'), revision=revision, **{'Content-Type': 'image/jpeg'})
+        self.assertEqual(second.status_code, 200)
+        self.assertNotEqual(second.json()['products'][0]['photo_revision'], revision)
+        self.assertFalse(self.media._path(old_key).exists())
+        with patch.object(self.media, 'put_product_photo') as put:
+            self.assertEqual((await self.upload(revision=revision)).status_code, 409)
+            put.assert_not_called()
+
+    async def test_photo_ownership_erasure_and_origin(self):
+        self.assertEqual((await self.upload(pid=self.other_pid)).status_code, 404)
+        self.assertEqual((await self.client.get(f'/api/products/{self.other_pid}/photo')).status_code, 404)
+        self.assertEqual((await self.upload(Origin='https://evil.test')).status_code, 403)
+        self.assertEqual((await self.upload(**{'Content-Type': 'text/html'})).status_code, 403)
+        self.assertEqual((await self.client.get(f'/api/products/{self.pid}/photo')).status_code, 404)
+        self.store.erase_user(1)
+        self.assertEqual((await self.upload()).status_code, 403)
+
+    async def test_invalid_oversized_and_disguised_files_are_not_stored(self):
+        for raw in (b'', b'\x89PNG\r\n\x1a\n', b'<svg></svg>', image_bytes('GIF'), image_bytes(size=(4001, 4000))):
+            response = await self.upload(raw)
+            self.assertEqual(response.status_code, 400, response.text)
+        response = await self.upload(b'x' * (MAX_PHOTO_BYTES + 1))
+        self.assertEqual(response.status_code, 413)
+        self.assertIsNone(self.store.get_product(self.pid)['photo_object_key'])
+        self.assertEqual(list(self.media.directory.rglob('*.jpg')), [])
+
+    async def test_failed_database_attach_removes_uploaded_object(self):
+        with patch.object(self.store, 'replace_seller_product_photo', side_effect=RuntimeError('db failed')):
+            with self.assertLogs('seller_api', level='ERROR'):
+                response = await self.upload()
+        self.assertEqual(response.status_code, 503)
+        self.assertIsNone(self.store.get_product(self.pid)['photo_object_key'])
+        self.assertEqual(list(self.media.directory.rglob('*.jpg')), [])
+
+    async def test_erasure_during_upload_cannot_attach_or_leave_orphan(self):
+        put = self.media.put_product_photo
+        def erase_after_upload(*args):
+            result = put(*args)
+            self.store.erase_user(1)
+            return result
+        with patch.object(self.media, 'put_product_photo', side_effect=erase_after_upload):
+            self.assertEqual((await self.upload()).status_code, 403)
+        self.assertEqual(list(self.media.directory.rglob('*.jpg')), [])
+
+    async def test_concurrent_photo_change_preserves_winner_and_cleans_loser(self):
+        winner_key, winner_version = self.media.put_product_photo(1, self.pid, image_bytes('JPEG'))
+        put = self.media.put_product_photo
+        def change_during_upload(*args):
+            result = put(*args)
+            self.store.set_product_photo(1, self.pid, winner_key, winner_version)
+            return result
+        with patch.object(self.media, 'put_product_photo', side_effect=change_during_upload):
+            self.assertEqual((await self.upload()).status_code, 409)
+        self.assertEqual(self.store.get_product(self.pid)['photo_object_key'], winner_key)
+        self.assertEqual(len(list(self.media.directory.rglob('*.jpg'))), 1)
+
+    async def test_pending_telegram_upload_cannot_overwrite_panel_photo(self):
+        await self.upload()
+        key = self.store.get_product(self.pid)['photo_object_key']
+        with self.assertRaises(LookupError):
+            self.store.set_product_photo(1, self.pid, 'late-telegram.jpg', 'version')
+        self.assertEqual(self.store.get_product(self.pid)['photo_object_key'], key)
+
+
+class PhotoValidationTests(unittest.TestCase):
+    def test_orientation_resize_and_private_metadata_removal(self):
+        exif = Image.Exif()
+        exif[274] = 6
+        exif[315] = 'Private author'
+        raw = image_bytes('JPEG', (3000, 1000), exif=exif)
+        prepared = prepare_photo(raw)
+        with Image.open(io.BytesIO(prepared)) as image:
+            self.assertLess(image.width, image.height)
+            self.assertLessEqual(max(image.size), 2048)
+            self.assertFalse(image.getexif())
