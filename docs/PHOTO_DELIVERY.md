@@ -87,3 +87,13 @@ temporary identities and their schema were removed. The latest offline run also
 includes two subsequently added panel/caption-button tests (283 passing, 48
 Oracle-only skipped). Live owner chat acceptance remains a separate check from
 these automated simulations.
+
+Production rollout on 17 October 2026 verified the 16:30:38 UTC recovery export's
+SHA-256, byte count, format and table counts before adding the two nullable
+columns. Business-data fingerprints were unchanged, existing caches were empty,
+and a second migration was a no-op. The runtime account could read the columns.
+[CI run 39050268632](https://github.com/Hushbin/Bot_for_telegram/actions/runs/39050268632)
+successfully deployed application release `aa07025`. Bot service, Telegram,
+database, fresh-backup and public seller API health checks passed. The owner chat
+check of first versus repeat views remains pending; automated tests did not send
+Telegram messages or use production products as write fixtures.
