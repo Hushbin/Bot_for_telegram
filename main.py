@@ -123,11 +123,12 @@ def build_application(settings=None, store=None, media=None):
 
     async def start_command(update, context):
         if panel and context.args == ['seller_panel']:
-            return await panel.panel(update, context)
+            return await panel_command(update, context)
         return await handlers.start(update, context)
 
     async def panel_command(update, context):
         if panel:
+            await handlers.hide_phone_keyboard(update, context)
             handlers.reset_flow(context)
             return await panel.panel(update, context)
         await update.effective_message.reply_text('The seller panel is not configured yet.')

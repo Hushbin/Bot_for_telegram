@@ -38,3 +38,5 @@ secure cookies, origin checks, ownership, account erasure, stock conflicts,
 product removal, profile updates and order notifications on isolated SQLite data.
 The frontend's jsdom tests use an API mock. Production writes are not test fixtures.
 See the frontend deployment guide for TLS renewal, tunnel management and rollback.
+
+Validation on 17 October 2026: 247 offline tests passed (43 optional Oracle tests skipped). A separate disposable Oracle schema verified seller create/edit/remove, profile updates, ownership, snapshot serialization, stale-stock rejection, accepted-order removal protection and retained order history. The test runtime was denied production schema access, and both temporary Oracle identities were removed. The embedded API also passed a real loopback HTTP startup/shutdown check.
