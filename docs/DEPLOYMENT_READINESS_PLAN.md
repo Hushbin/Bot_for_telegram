@@ -1,7 +1,11 @@
 # Deployment readiness implementation plan
 
-Prepared: **18 October 2026**. Status: planned; implementation has not started.
+Prepared: **18 October 2026**. Status: deferred; implementation has not started.
 Source: the [deployment readiness finding](IMPROVEMENT_SUGGESTIONS.md).
+The lower-risk [database connection measurement stage](DATABASE_CONNECTION_METRICS.md)
+was implemented first. Revisit readiness enforcement after
+reviewing its operational risks, including emergency deployment overrides and
+an initial report-only phase.
 
 ## Problem and scope
 

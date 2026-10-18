@@ -6,6 +6,10 @@ Telegram bot backed by the existing OCI development Autonomous JSON Database and
 
 See [docs/README.md](docs/README.md) for ordering, validation results and remaining improvements. Setup and deployment instructions are below.
 
+Oracle connection-opening latency is logged without credentials or SQL. See
+[connection measurements](docs/DATABASE_CONNECTION_METRICS.md) for the journal
+summary command and interpretation; connections remain per operation.
+
 ## Data model
 
 | Table | Purpose | Key data |

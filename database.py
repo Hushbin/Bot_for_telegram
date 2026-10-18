@@ -1,5 +1,9 @@
 """Small Oracle adapter for the bot's current data contract."""
 
+import json
+import logging
+from time import monotonic_ns
+
 import oracledb
 
 from catalog import PRODUCT_PAGE_SIZE, validate_product_cursor
@@ -10,6 +14,7 @@ from order_schema import TABLE_COLUMNS as ORDER_TABLE_COLUMNS
 
 SCHEMA = "SME_SCHEMA"
 ERASED = "[deleted]"
+LOG = logging.getLogger(__name__)
 # Columns added after the first release; keep in step with scripts/setup_db.py.
 REQUIRED_COLUMNS = {
     "USERS": ("telegram_user_id", "phone_verified", "deleted_at"),
@@ -24,6 +29,21 @@ def row_dict(cursor, row):
     if row is None:
         return None
     return {column[0].lower(): value for column, value in zip(cursor.description, row)}
+
+
+def _record_connection_open(started, outcome, error_type=None):
+    """Best-effort diagnostics must never change a connection's ownership or outcome."""
+    if started is None:
+        return
+    try:
+        event = dict(v=1, elapsed_ms=(monotonic_ns() - started) / 1_000_000, outcome=outcome)
+        if error_type is not None:
+            event["error_type"] = error_type
+        LOG.info("DB_CONNECTION %s", json.dumps(event, separators=(",", ":"), allow_nan=False))
+    except Exception:
+        # In particular, a failing logging handler must not lose an opened connection
+        # or replace the exception raised by the driver. Never log secret-bearing args.
+        pass
 
 
 class OracleStore(SellerStoreMixin, OrderStoreMixin):
@@ -42,7 +62,17 @@ class OracleStore(SellerStoreMixin, OrderStoreMixin):
             )
 
     def connect(self):
-        return oracledb.connect(**self.connection_args)
+        try:
+            started = monotonic_ns()
+        except Exception:
+            started = None
+        try:
+            connection = oracledb.connect(**self.connection_args)
+        except Exception as exc:
+            _record_connection_open(started, "failure", type(exc).__name__)
+            raise
+        _record_connection_open(started, "success")
+        return connection
 
     def check(self):
         """Fail at startup, with a clear message, if the schema predates this release.
