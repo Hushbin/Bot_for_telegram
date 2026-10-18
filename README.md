@@ -44,7 +44,7 @@ What the bot stores, who sees it, and for how long. New users see the privacy no
 - **Retention.** Data is kept until the user erases it with `/deleteme`; there is no automatic expiry. Users can see what is stored with `/mydata`.
 - **Erasure.** `/deleteme` asks for confirmation, then overwrites the user's name, email and phone, their seller profile and their products with `[deleted]`, hides the products, and deletes the photo objects. Rows are overwritten rather than deleted so the runtime database account needs no `DELETE` privilege. The numeric Telegram ID and the erasure time remain. A user who registers again starts from an empty profile.
 - **Photos.** Deleting a photo needs its version ID because the bucket is versioned; the ID is stored with the product. A photo stored without one (none are created by this version) only gets a delete marker and needs manual cleanup. If a photo cannot be deleted, the data is still erased, the user is told, and the object key is logged at ERROR.
-- **Corrections.** Editing the latest message while entering details (name and email, phone, business details, a product line) corrects that input; the bot updates what it saved rather than adding a duplicate. Edits of older messages, or after another command, are ignored.
+- **Corrections.** Editing the latest message while entering account details or a compact product line corrects that input; the bot updates the saved record rather than adding a duplicate. Guided product fields can be corrected before Save; a category selection or subsequent field makes earlier messages ineligible. Editing the description refreshes the review and expires its old Save button. After guided Save, use the seller panel for changes. Older edits and edits after a new entry command are ignored.
 
 ## Local setup
 
@@ -113,20 +113,36 @@ Telegram's command menu lists every command. `/menu` opens a button menu for the
 | `/deleteme` | Erase your data, seller profile, products and photos (asks to confirm) |
 | `/sellerprofile` | Create or update a seller listing profile |
 | `/preferences` | Choose a catalog category |
-| `/addproduct` | Add name, category, USD price, stock, description, then one optional photo |
+| `/addproduct` | Enter product fields step by step, review and save, then add an optional photo; compact input also works |
 | `/photo [number]` | Attach a photo using your seller product number; prefix a global catalog ID with `G` |
-| `/products [all\|clothing\|hardware\|food\|art]` | Browse the latest 20 products |
+| `/products [all\|clothing\|hardware\|food\|art]` | Browse products, 20 per page, with Older and Newest buttons |
 | `/product [catalog ID]` | View details and the private bucket photo if present; accepts `1` or `#1` and asks for an ID when omitted |
 | `/order [catalog ID]` | Review a quantity, price and contact sharing before confirming an order |
 | `/orders` | View your purchases and cancel pending requests |
 | `/sales` | View incoming orders, accept/decline, fulfill or cancel accepted orders |
-| `/myproducts` | List your latest 20 products |
+| `/myproducts` | Browse your listings, 20 per page, with Older and Newest buttons |
 | `/stock [number quantity]` | Set stock using your seller product number; prefix a global catalog ID with `G` |
-| `/cancel`, `/skip` | Stop the current conversation, or finish a product without a photo |
+| `/cancel`, `/skip` | Cancel the current conversation, or skip an optional description or photo with `/skip` |
 
-Registration takes the name and email as `Jane Doe, jane@example.com` (the name may contain commas; the email is what follows the last one). The seller listing format is `name | city/area`, with optional `| email | phone` for separate seller contact details. The earlier `name, email, address, phone` format still works. The product input format is `name | category | price | stock | description`. A photo must be at most 5 MB. The bot uploads it to a unique private object key and stores the key on the product row. If the database update fails after upload, the bot deletes that exact object version. Photos are never given public Object Storage URLs; `/product` reads the object through the bot's OCI identity and sends it to Telegram.
+Registration takes the name and email as `Jane Doe, jane@example.com` (the name may contain commas; the email is what follows the last one). The seller listing format is `name | city/area`, with optional `| email | phone` for separate seller contact details. The earlier `name, email, address, phone` format still works.
+
+`/addproduct` asks for a name, category button, USD price, stock and description
+(`/skip` leaves the description empty), then shows a review with Save, Restart
+and Cancel buttons. The guided listing is created only on Save. As a shortcut,
+send `name | category | price | stock | description` at the first prompt; this
+format saves immediately. Cancelling after a save leaves the listing available.
+Unfinished drafts are lost on restart. See [guided product entry](docs/GUIDED_PRODUCT_ENTRY.md)
+for corrections, validation and save-failure behavior.
+
+A photo must be at most 5 MB. The bot uploads it to a unique private object key and stores the key on the product row. If the database update fails after upload, the bot deletes that exact object version. Photos are never given public Object Storage URLs; `/product` reads the object through the bot's OCI identity and sends it to Telegram.
 
 For example, if your first listing has catalog ID `#3`, you see `Your product #1 (catalog ID #3)`. Use `/stock 1 5` or `/photo 1` for your own listing; buyers use `/product 3` or `/product #3`. When the bot asks for a catalog ID, replying `3` or `#3` works. `/stock G3 5` and `/photo G3` also accept the global catalog ID explicitly.
+
+Catalogs show newest products first. Tap **Older products** to continue browsing
+or **Newest products** to return to the beginning. Navigation keeps the selected
+category, works after a bot restart and preserves any unfinished conversation.
+New listings appear when returning to Newest; edits and removals affect live
+results. See [catalog browsing](docs/CATALOG_PAGINATION.md) for details and validation.
 
 The bot uses polling on both local and VM deployments. It needs a real Telegram token to run; keep it in ignored local configuration or OCI Vault. The bucket is versioned: future photo bytes and retained versions count against the [Always Free Object Storage allowance](https://docs.oracle.com/en-us/iaas/Content/FreeTier/freetier_topic-Always_Free_Resources.htm).
 

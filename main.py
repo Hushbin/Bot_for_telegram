@@ -19,6 +19,7 @@ from handlers import (
     BotHandlers, CHOOSING, CLASS_STATE, SME_DETAILS, CHOOSE_PREF,
     PRODUCT_DETAILS, PRODUCT_PHOTO, PHONE, CONFIRM_ERASE, PRODUCT_ID, PHOTO_ID,
     STOCK_INPUT, BROWSE_CATEGORY, on_error,
+    PRODUCT_CATEGORY, PRODUCT_PRICE, PRODUCT_STOCK, PRODUCT_DESCRIPTION, PRODUCT_REVIEW,
 )
 
 
@@ -154,6 +155,8 @@ def build_application(settings=None, store=None, media=None):
                    .post_stop(stop_runtime).post_shutdown(stop_runtime).build())
     application.add_handler(CallbackQueryHandler(
         orders.durable_action, pattern=r"^(ord|hist):"), group=-1)
+    application.add_handler(CallbackQueryHandler(
+        handlers.product_page_action, pattern=r"^prodpage:"), group=-1)
 
     # One conversation for every multi-step flow. A user can only be in one state at a
     # time, any entry command replaces the current state, and one /cancel clears it.
@@ -162,6 +165,7 @@ def build_application(settings=None, store=None, media=None):
             CommandHandler("order", orders.start, filters=PRIVATE_COMMAND),
             CallbackQueryHandler(orders.start, pattern=r"^buy:"),
             CallbackQueryHandler(orders.confirm, pattern=r"^(confirm|discard):[0-9a-f]{32}$"),
+            CallbackQueryHandler(handlers.product_entry_action, pattern=r"^entry:"),
             CommandHandler("menu", handlers.menu, filters=PRIVATE_COMMAND),
             CallbackQueryHandler(handlers.menu_action, pattern=r"^menu:"),
             CommandHandler("start", start_command, filters=PRIVATE_COMMAND),
@@ -211,8 +215,18 @@ def build_application(settings=None, store=None, media=None):
             ],
             PRODUCT_DETAILS: [
                 MessageHandler(PRIVATE_TEXT, handlers.product_details),
-                *with_hint(handlers, "Please send: name | category | price | stock | description."),
+                *with_hint(handlers, "Please send a product name, or name | category | price | stock | description."),
             ],
+            PRODUCT_CATEGORY: [*with_hint(handlers, "Please choose a product category above.")],
+            PRODUCT_PRICE: [MessageHandler(PRIVATE_TEXT, handlers.product_entry_text),
+                            *with_hint(handlers, "Please send a price in USD, for example 19.99.")],
+            PRODUCT_STOCK: [MessageHandler(PRIVATE_TEXT, handlers.product_entry_text),
+                            *with_hint(handlers, "Please send whole-number stock, for example 5.")],
+            PRODUCT_DESCRIPTION: [CommandHandler("skip", handlers.product_description_skip,
+                                                 filters=PRIVATE_COMMAND),
+                                  MessageHandler(PRIVATE_TEXT, handlers.product_entry_text),
+                                  *with_hint(handlers, "Please send a description or /skip.")],
+            PRODUCT_REVIEW: [*with_hint(handlers, "Please review the product and use the buttons above.")],
             PRODUCT_PHOTO: [
                 MessageHandler(PRIVATE_COMMAND & filters.PHOTO, handlers.photo_for_product),
                 CommandHandler("skip", handlers.skip, filters=PRIVATE_COMMAND),

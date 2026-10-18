@@ -9,6 +9,8 @@ Setup, configuration, commands, privacy and VM deployment are documented in the
 | [Ordering validation](ORDERING_VALIDATION.md) | Dated automated checks and Oracle migration evidence; manual UI test limitations |
 | [Photo delivery](PHOTO_DELIVERY.md) | Persistent Telegram photo references, timeouts, migration and verification |
 | [Improvement suggestions](IMPROVEMENT_SUGGESTIONS.md) | Remaining application and deployment improvements checked against current source |
+| [Catalog browsing](CATALOG_PAGINATION.md) | Product pagination, navigation behavior and validation |
+| [Guided product entry](GUIDED_PRODUCT_ENTRY.md) | Listing wizard, compact shortcut, corrections, save failures and validation |
 
 Infrastructure resources, backup operations and secret rotation are documented in
 [the infrastructure repository](https://github.com/Hushbin/oci-infra-for-telegram-bot/tree/main/docs).

@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
-from catalog import LEGACY_CATEGORY_LABELS
+from catalog import LEGACY_CATEGORY_LABELS, PRODUCT_PAGE_SIZE, validate_product_cursor
 from order_store import OrderDB, OrderStoreMixin
 from seller_store import SellerStoreMixin
 from order_schema import SCHEMA as ORDER_SCHEMA, TABLE_COLUMNS as ORDER_TABLE_COLUMNS
@@ -291,6 +291,11 @@ class SQLiteStore(SellerStoreMixin, OrderStoreMixin):
             return dict(row) if row else None
 
     def list_products(self, category=None, seller_id=None):
+        return self.list_products_page(category, seller_id)[0]
+
+    def list_products_page(self, category=None, seller_id=None, *, before_id=None):
+        """Return (rows, has_more), paging by ID so new inserts cannot shift rows."""
+        validate_product_cursor(before_id)
         where = ["p.deleted_at IS NULL"]
         values = []
         if category is not None:
@@ -299,13 +304,17 @@ class SQLiteStore(SellerStoreMixin, OrderStoreMixin):
         if seller_id is not None:
             where.append("p.seller_telegram_user_id = ?")
             values.append(seller_id)
+        if before_id is not None:
+            where.append("p.product_id < ?")
+            values.append(before_id)
         with self.connect() as connection:
             rows = connection.execute(f"""
                 SELECT {PRODUCT_COLUMNS} FROM products p
                 JOIN sellers s ON s.telegram_user_id = p.seller_telegram_user_id
-                WHERE {" AND ".join(where)} ORDER BY p.product_id DESC LIMIT 20
+                WHERE {" AND ".join(where)} ORDER BY p.product_id DESC
+                LIMIT {PRODUCT_PAGE_SIZE + 1}
             """, values).fetchall()
-            return [dict(row) for row in rows]
+            return [dict(row) for row in rows[:PRODUCT_PAGE_SIZE]], len(rows) > PRODUCT_PAGE_SIZE
 
     def count_products(self, seller_id):
         with self.connect() as connection:

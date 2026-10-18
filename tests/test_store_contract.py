@@ -254,6 +254,73 @@ class StoreContract:
         self.assertEqual(self.store.count_products(self.uid), 22)
         self.assertEqual(self.store.count_products(self.other), 1)
 
+    # -- catalog pages -------------------------------------------------------
+
+    def test_product_pages_cover_boundaries_without_skipping_the_lookahead(self):
+        self.register(seller=True)
+        ids = []
+        for count in (0, 1, 20, 21, 40, 45):
+            with self.subTest(count=count):
+                while len(ids) < count:
+                    ids.append(self.product(name=f"P{len(ids)}"))
+                expected = list(reversed(ids))
+                found, before_id = [], None
+                while True:
+                    page, has_more = self.store.list_products_page(
+                        seller_id=self.uid, before_id=before_id)
+                    offset = len(found)
+                    self.assertEqual([p["product_id"] for p in page], expected[offset:offset + 20])
+                    self.assertEqual(has_more, len(expected) > offset + 20)
+                    found.extend(p["product_id"] for p in page)
+                    if not has_more:
+                        break
+                    before_id = page[-1]["product_id"]
+                self.assertEqual(found, expected)
+                self.assertEqual(self.store.list_products(seller_id=self.uid),
+                                 self.store.list_products_page(seller_id=self.uid)[0])
+
+    def test_product_pages_preserve_filters_and_stable_seller_numbers(self):
+        self.register(seller=True)
+        self.register(self.other, seller=True)
+        erased = self.product(category=ART)
+        self.store.remove_seller_product(self.uid, erased)
+        ids = []
+        for _ in range(23):
+            ids.append(self.product(category=ART))
+            self.product(category=CLOTHING)
+            self.product(self.other, category=ART)
+        first, more = self.store.list_products_page(ART, self.uid)
+        second, final_more = self.store.list_products_page(
+            ART, self.uid, before_id=first[-1]["product_id"])
+        self.assertTrue(more)
+        self.assertFalse(final_more)
+        self.assertEqual([p["product_id"] for p in first + second], list(reversed(ids)))
+        # Deleted rows and nonmatching categories still occupy their original numbers.
+        self.assertEqual([p["seller_number"] for p in first + second],
+                         list(reversed(range(2, 47, 2))))
+
+    def test_product_pages_survive_new_inserts_and_an_erased_cursor_row(self):
+        self.register(seller=True)
+        ids = [self.product() for _ in range(25)]
+        first, more = self.store.list_products_page(seller_id=self.uid)
+        self.assertTrue(more)
+        cursor = first[-1]["product_id"]
+        newest = self.product(name="Newer arrival")
+        self.store.remove_seller_product(self.uid, cursor)
+        second, more = self.store.list_products_page(seller_id=self.uid, before_id=cursor)
+        self.assertEqual([p["product_id"] for p in second], list(reversed(ids[:5])))
+        self.assertFalse(more)
+        self.assertEqual(self.store.list_products_page(seller_id=self.uid)[0][0]["product_id"],
+                         newest)
+        self.store.erase_user(self.uid)
+        self.assertEqual(self.store.list_products_page(seller_id=self.uid, before_id=cursor),
+                         ([], False))
+
+    def test_product_page_rejects_invalid_cursors(self):
+        for cursor in (0, -1, 2**63, "1", True, 1.5):
+            with self.subTest(cursor=cursor), self.assertRaises(ValueError):
+                self.store.list_products_page(before_id=cursor)
+
     # -- erasure -------------------------------------------------------------
 
     def test_erase_hides_everything_and_returns_the_photos(self):

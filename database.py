@@ -2,6 +2,7 @@
 
 import oracledb
 
+from catalog import PRODUCT_PAGE_SIZE, validate_product_cursor
 from order_store import OrderDB, OrderStoreMixin
 from seller_store import SellerStoreMixin
 from order_schema import TABLE_COLUMNS as ORDER_TABLE_COLUMNS
@@ -259,6 +260,11 @@ class OracleStore(SellerStoreMixin, OrderStoreMixin):
                 return row_dict(cursor, cursor.fetchone())
 
     def list_products(self, category=None, seller_id=None):
+        return self.list_products_page(category, seller_id)[0]
+
+    def list_products_page(self, category=None, seller_id=None, *, before_id=None):
+        """Return (rows, has_more), paging by ID so new inserts cannot shift rows."""
+        validate_product_cursor(before_id)
         where = ["p.deleted_at IS NULL"]
         binds = {}
         if category is not None:
@@ -267,6 +273,9 @@ class OracleStore(SellerStoreMixin, OrderStoreMixin):
         if seller_id is not None:
             where.append("p.seller_telegram_user_id = :seller_id")
             binds["seller_id"] = seller_id
+        if before_id is not None:
+            where.append("p.product_id < :before_id")
+            binds["before_id"] = before_id
         with self.connect() as connection:
             with connection.cursor() as cursor:
                 cursor.execute(f"""
@@ -280,9 +289,11 @@ class OracleStore(SellerStoreMixin, OrderStoreMixin):
                     FROM {self.schema}.PRODUCTS p JOIN {self.schema}.SELLERS s
                       ON p.seller_telegram_user_id = s.telegram_user_id
                     WHERE {" AND ".join(where)}
-                    ORDER BY p.product_id DESC FETCH FIRST 20 ROWS ONLY
+                    ORDER BY p.product_id DESC FETCH FIRST {PRODUCT_PAGE_SIZE + 1} ROWS ONLY
                 """, binds)
-                return [row_dict(cursor, row) for row in cursor.fetchall()]
+                rows = cursor.fetchall()
+                return ([row_dict(cursor, row) for row in rows[:PRODUCT_PAGE_SIZE]],
+                        len(rows) > PRODUCT_PAGE_SIZE)
 
     def get_seller_product(self, seller_id, seller_number):
         """Resolve a seller's stable listing number, counting erased rows too."""

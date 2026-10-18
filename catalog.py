@@ -26,6 +26,17 @@ DEFAULT_CURRENCY = "USD"
 # two decimal places; add an exponent per currency before offering one that does not.
 MINOR_UNITS_PER_MAJOR = 100
 
+PRODUCT_PAGE_SIZE = 20
+# Use the ID range shared by SQLite and Oracle, as with order IDs.
+MAX_PRODUCT_ID = 2**63 - 1
+
+
+def validate_product_cursor(before_id):
+    if before_id is not None and (
+        type(before_id) is not int or not 0 < before_id <= MAX_PRODUCT_ID
+    ):
+        raise ValueError("Invalid product page cursor.")
+
 
 def category_label(key):
     """Display text for a stored category key; an unknown value is shown as stored."""

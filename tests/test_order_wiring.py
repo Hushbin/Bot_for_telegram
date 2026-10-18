@@ -93,6 +93,37 @@ class OrderWiringTests(WiringTestCase):
         await self.say(2, PHONE)
         self.assertEqual(self.store.get_user(2)['full_name'], 'Seller Changed')
 
+    async def test_catalog_navigation_preserves_unconfirmed_order(self):
+        self.seed()
+        await self.say(1, '/order 1')
+        texts, answers = await self.tap(1, 'prodpage:all:all:new')
+        self.assertEqual(len(answers), 1)
+        self.assertEqual(len(texts), 2)
+        await self.say(1, '2')
+        draft = self.app.user_data[1]['order_draft'].copy()
+        await self.tap(1, 'prodpage:all:all:new')
+        self.assertEqual(self.app.user_data[1]['order_draft'], draft)
+        self.assertEqual(self.store.list_orders(1), [])
+        await self.confirm(draft)
+        self.assertEqual(self.store.get_order(1, 1)['quantity'], 2)
+
+    async def test_expired_product_entry_button_preserves_an_order_draft(self):
+        self.seed()
+        self.seed_seller(1)
+        await self.say(1, '/addproduct')
+        await self.say(1, 'Unsaved hat')
+        entry = self.app.user_data[1]['product_draft']
+        old_button = f'entry:{entry["token"]}:art'
+        draft = await self.draft()
+        self.assertNotIn('product_draft', self.app.user_data[1])
+        texts, answers = await self.tap(1, old_button)
+        self.assertIn('expired', texts[0])
+        self.assertEqual(len(answers), 1)
+        self.assertEqual(self.app.user_data[1]['order_draft'], draft)
+        await self.confirm(draft)
+        self.assertEqual(self.store.get_order(1, 1)['quantity'], 2)
+        self.assertEqual(self.store.count_products(1), 0)
+
     async def test_seller_cancellation_requires_confirmation(self):
         self.seed()
         await self.confirm(await self.draft())
