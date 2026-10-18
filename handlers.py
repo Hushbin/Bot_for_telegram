@@ -6,20 +6,28 @@ import logging
 import re
 from decimal import Decimal, InvalidOperation
 from time import monotonic
+from uuid import uuid4
 
 from telegram import (
     InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
 )
-from telegram.ext import ConversationHandler
+from telegram.ext import ApplicationHandlerStop, ConversationHandler
 
-from catalog import CATEGORIES, DEFAULT_CURRENCY, MINOR_UNITS_PER_MAJOR, category_label
+from catalog import (
+    CATEGORIES, DEFAULT_CURRENCY, MINOR_UNITS_PER_MAJOR, MAX_PRODUCT_ID, category_label,
+)
 from photo_delivery import ProductPhotoDelivery
 
 
 LOG = logging.getLogger(__name__)
 (CHOOSING, CLASS_STATE, SME_DETAILS, CHOOSE_PREF, PRODUCT_DETAILS, PRODUCT_PHOTO,
  PHONE, CONFIRM_ERASE, PRODUCT_ID, PHOTO_ID, STOCK_INPUT, BROWSE_CATEGORY) = range(12)
+(PRODUCT_CATEGORY, PRODUCT_PRICE, PRODUCT_STOCK, PRODUCT_DESCRIPTION,
+ PRODUCT_REVIEW) = range(30, 35)
+PRODUCT_FIELDS = ("name", "category", "price_minor", "stock_quantity", "description")
+PRODUCT_FIELD_STATES = dict(zip(PRODUCT_FIELDS, (
+    PRODUCT_DETAILS, PRODUCT_CATEGORY, PRODUCT_PRICE, PRODUCT_STOCK, PRODUCT_DESCRIPTION)))
 MAX_PHOTO_BYTES = 5 * 1024 * 1024
 
 PRIVACY_NOTICE = (
@@ -136,26 +144,49 @@ def parse_business(text, account_email=None, account_phone=None):
     return clean_name(name), clean_email(email), address, clean_phone(phone)
 
 
+def clean_product_category(value):
+    key = value.strip().lower()
+    if key not in CATEGORIES:
+        raise ValueError("Choose a product category from the buttons.")
+    return key
+
+
+def clean_product_price(value):
+    try:
+        price = Decimal(value.strip())
+        if (not price.is_finite() or not 0 <= price < 10**10
+                or price != price.quantize(Decimal("0.01"))):
+            raise ValueError
+        return int(price * MINOR_UNITS_PER_MAJOR)
+    except (InvalidOperation, OverflowError, ValueError) as exc:
+        raise ValueError("Enter a nonnegative USD price with at most two decimals, "
+                         "up to 9999999999.99 (for example 19.99).") from exc
+
+
+def clean_product_stock(value):
+    try:
+        quantity = int(value)
+        if not 0 <= quantity < 10**10:
+            raise ValueError
+        return quantity
+    except ValueError as exc:
+        raise ValueError("Enter whole-number stock from 0 to 9999999999, for example 5.") from exc
+
+
+def clean_product_description(value):
+    value = value.strip()
+    if len(value) > 1000:
+        raise ValueError("Enter a description of at most 1000 characters, or /skip.")
+    return value or None
+
+
 def parse_product(text):
     fields = [part.strip() for part in text.split("|", 4)]
     if len(fields) != 5:
         raise ValueError("Use: name | category | price | stock | description")
-    name, category_key, price_text, stock_text, description = fields
-    category = category_key.lower()  # the key, not the label, is what gets stored
-    if not 1 <= len(name) <= 160 or category not in CATEGORIES or len(description) > 1000:
-        raise ValueError("Check name, category key, and description length (max 1000).")
-    try:
-        price = Decimal(price_text)
-        minor = price * MINOR_UNITS_PER_MAJOR
-        if not price.is_finite() or price < 0 or minor != minor.to_integral_value():
-            raise ValueError("Price must be a nonnegative amount with at most two decimals.")
-        price_minor = int(minor)
-        quantity = int(stock_text)
-        if not 0 <= price_minor < 10**12 or not 0 <= quantity < 10**10:
-            raise ValueError("Price or stock is out of range.")
-    except (InvalidOperation, OverflowError, ValueError) as exc:
-        raise ValueError("Enter a valid nonnegative price and whole-number stock.") from exc
-    return name, category, description or None, price_minor, quantity
+    name, category, price, stock, description = fields
+    return (clean_name(name), clean_product_category(category),
+            clean_product_description(description), clean_product_price(price), clean_product_stock(stock))
 
 
 def product_text(product, *, detail=False, seller_view=False):
@@ -271,8 +302,8 @@ class BotHandlers:
         from order_handlers import OrderHandlers
         self.order_handlers = OrderHandlers(self, orders_enabled)
 
-    async def run(self, operation, *args):
-        return await asyncio.to_thread(operation, *args)
+    async def run(self, operation, *args, **kwargs):
+        return await asyncio.to_thread(operation, *args, **kwargs)
 
     async def owned_product(self, seller_id, reference):
         """Seller numbers are local; G-prefixed IDs address the shared catalog."""
@@ -295,7 +326,8 @@ class BotHandlers:
         """Forget the half-finished input of whatever flow the user was in."""
         for key in ("last_input", "draft", "pending_product_id",
                     "pending_product_number", "signup_role",
-                    "phone_keyboard_active", "order_after_signup", "order_product_id", "order_draft"):
+                    "phone_keyboard_active", "order_after_signup", "order_product_id", "order_draft",
+                    "product_draft"):
             context.user_data.pop(key, None)
 
     @staticmethod
@@ -351,6 +383,7 @@ class BotHandlers:
             "phone": self.phone_text,
             "business": self.seller_details,
             "product": self.product_details,
+            "product_entry": self.product_entry_text,
         }.get(last["step"])
         return await step(update, context) if step else None
 
@@ -788,8 +821,10 @@ class BotHandlers:
         if not seller:
             await update.effective_message.reply_text("Register a seller profile with /sellerprofile first.")
             return ConversationHandler.END
+        context.user_data["product_draft"] = {"field": "name", "fields": {}}
         await update.effective_message.reply_text(
-            "Send: name | category | price in USD | stock | description\n"
+            "Send a product name to enter details step by step.\n"
+            "Or use the shortcut: name | category | price in USD | stock | description\n"
             "Category keys: clothing, hardware, food, art.\n"
             "Example: Blue shirt | clothing | 19.99 | 5 | Cotton shirt"
         )
@@ -798,6 +833,10 @@ class BotHandlers:
     async def product_details(self, update, context):
         message = update.effective_message
         last = context.user_data.get("last_input") or {}
+        if "|" not in message.text and not (
+            getattr(update, "edited_message", None) is not None and last.get("step") == "product"
+        ):
+            return await self.product_entry_text(update, context)
         # An edit of the line that already created a product updates that product.
         product_id = None
         seller_number = None
@@ -833,17 +872,138 @@ class BotHandlers:
         except Exception:
             await self.failure(update)
             return PRODUCT_DETAILS
-        context.user_data["pending_product_id"] = product_id
-        context.user_data["pending_product_number"] = seller_number
         context.user_data["last_input"]["product_id"] = product_id
         context.user_data["last_input"]["seller_number"] = seller_number
-        await message.reply_text(
-            f"Your product #{seller_number} saved (catalog ID #{product_id}). "
-            "Send one product photo (max 5 MB), "
-            "or /skip to finish without a photo. You can still correct the details by "
-            "editing your message."
-        )
+        return await self.product_saved(update, context, product_id, seller_number, compact=True)
+
+    async def product_saved(self, update, context, product_id, seller_number, *, compact=False):
+        # Record success before Telegram I/O; a lost reply must not allow another insert.
+        context.user_data["pending_product_id"] = product_id
+        context.user_data["pending_product_number"] = seller_number
+        context.user_data.pop("product_draft", None)
+        if not compact:
+            context.user_data.pop("last_input", None)
+        try:
+            await update.effective_message.reply_text(
+                f"Your product #{seller_number} saved (catalog ID #{product_id}). "
+                "Send one product photo (max 5 MB), or /skip to finish without a photo. "
+                "Cancelling now leaves the saved listing available. "
+                + ("You can still correct the details by editing your message." if compact else
+                   "Use the seller panel for later changes.")
+            )
+        except Exception:
+            await self.failure(update)
         return PRODUCT_PHOTO
+
+    async def product_entry_text(self, update, context):
+        draft = context.user_data.get("product_draft")
+        if not draft:
+            await update.effective_message.reply_text("Product entry expired. Use /addproduct to start again.")
+            return ConversationHandler.END
+        message = update.effective_message
+        field = draft["field"]
+        if getattr(update, "edited_message", None) is not None:
+            field = context.user_data["last_input"]["field"]
+        validators = dict(name=clean_name, price_minor=clean_product_price,
+                          stock_quantity=clean_product_stock, description=clean_product_description)
+        if field not in validators:
+            return None
+        # A correction invalidates any later values and all previously issued buttons.
+        for later in PRODUCT_FIELDS[PRODUCT_FIELDS.index(field):]:
+            draft["fields"].pop(later, None)
+        draft.update(field=field, token=None, message_id=None)
+        self.remember(context, message, "product_entry", field=field)
+        try:
+            draft["fields"][field] = validators[field](message.text)
+        except ValueError as exc:
+            await message.reply_text(f"{exc} Try again or /cancel.")
+            return PRODUCT_FIELD_STATES[field]
+        next_field = PRODUCT_FIELDS[PRODUCT_FIELDS.index(field) + 1] if field != "description" else "review"
+        return await self.product_entry_prompt(update, context, next_field)
+
+    async def product_description_skip(self, update, context):
+        draft = context.user_data["product_draft"]
+        draft["fields"]["description"] = None
+        context.user_data.pop("last_input", None)
+        return await self.product_entry_prompt(update, context, "review")
+
+    async def product_entry_prompt(self, update, context, field):
+        draft = context.user_data["product_draft"]
+        draft.update(field=field, token=None, message_id=None)
+        options = {}
+        if field in ("category", "review"):
+            draft["token"] = uuid4().hex
+            if field == "category":
+                text = "Choose a product category."
+                actions = [(label, key) for key, label in CATEGORIES.items()]
+            else:
+                values = draft["fields"]
+                amount = Decimal(values["price_minor"]) / MINOR_UNITS_PER_MAJOR
+                text = (f'Review your product (not saved yet):\n{values["name"]}\n'
+                        f'Category: {category_label(values["category"])}\n'
+                        f'Price: {DEFAULT_CURRENCY} {amount:.2f}\n'
+                        f'Stock: {values["stock_quantity"]}\n'
+                        f'Description: {values["description"] or "(none)"}')
+                actions = [("Save product", "save"), ("Restart entry", "restart"), ("Cancel", "cancel")]
+            options["reply_markup"] = InlineKeyboardMarkup([
+                [InlineKeyboardButton(label, callback_data=f"entry:{draft['token']}:{action}")]
+                for label, action in actions])
+        else:
+            text = {"price_minor": "Send a price in USD, for example 19.99.",
+                    "stock_quantity": "Send whole-number stock, for example 5 (0 is allowed).",
+                    "description": "Send a description (max 1000 characters), or /skip to leave it empty."}[field]
+        prompt = await update.effective_message.reply_text(text, **options)
+        if field in ("category", "review"):
+            draft["message_id"] = prompt.message_id
+        return PRODUCT_REVIEW if field == "review" else PRODUCT_FIELD_STATES[field]
+
+    async def product_entry_action(self, update, context):
+        query = update.callback_query
+        if update.effective_chat.type != "private":
+            await query.answer("Please message me in a private chat.", show_alert=True)
+            return None
+        await query.answer()
+        draft = context.user_data.get("product_draft")
+        data = query.data
+        match = re.fullmatch(r"entry:([0-9a-f]{32}):([a-z_]+)", data) if len(data.encode()) <= 64 else None
+        if (not match or not draft or match[1] != draft.get("token")
+                or query.message.message_id != draft.get("message_id")):
+            await query.message.reply_text("This product entry button expired. Use /addproduct to start again.")
+            return None
+        action = match[2]
+        if draft["field"] == "category" and action in CATEGORIES:
+            draft["fields"]["category"] = action
+            context.user_data.pop("last_input", None)
+            return await self.product_entry_prompt(update, context, "price_minor")
+        if draft["field"] != "review" or action not in ("save", "restart", "cancel"):
+            await query.message.reply_text("Invalid product entry action. Use the current buttons or /cancel.")
+            return None
+        if action == "restart":
+            return await self.add_product(update, context)
+        if action == "cancel":
+            return await self.cancel(update, context)
+        # Revalidate the draft and live seller at the moment of confirmation.
+        try:
+            seller = await self.run(self.store.get_seller, update.effective_user.id)
+            if not seller:
+                self.reset_flow(context)
+                await query.message.reply_text("Register a seller profile with /sellerprofile first.")
+                return ConversationHandler.END
+            values = draft["fields"]
+            fields = (clean_name(values["name"]), clean_product_category(values["category"]),
+                      clean_product_description(values["description"] or ""),
+                      clean_product_price(str(Decimal(values["price_minor"]) / MINOR_UNITS_PER_MAJOR)),
+                      clean_product_stock(str(values["stock_quantity"])))
+            product_id, seller_number = await self.run(
+                self.store.create_product, update.effective_user.id, *fields, True)
+        except Exception:
+            LOG.exception("Could not save guided product")
+            await query.message.reply_text(
+                "The save could not be confirmed. Check /myproducts before retrying, "
+                "as the listing may already have been saved.")
+            # Reissue review buttons; never retry an uncertain insert automatically.
+            return await self.product_entry_prompt(update, context, "review")
+        return await self.product_saved(update, context, product_id, seller_number)
 
     async def photo_for_product(self, update, context):
         product_id = context.user_data.get("pending_product_id")
@@ -941,37 +1101,89 @@ class BotHandlers:
             category = (key if key != "all" else None) if key else (
                 user["preferred_category"] if user else None
             )
-            products = await self.run(self.store.list_products, category, None)
         except Exception:
             await self.failure(update)
             return
-        if not products:
-            await update.effective_message.reply_text("No products yet in that category. Try /products all.")
-            return
-        for offset in range(0, len(products), 5):
-            await update.effective_message.reply_text(
-                "\n\n".join(product_text(product) for product in products[offset:offset + 5])
-            )
-        await update.effective_message.reply_text(
-            "Use /product <catalog ID> to view a photo. The ID is the #number "
-            "before each product name."
-        )
+        await self.product_page(update, "all", category)
 
     async def my_products(self, update, context):
+        await self.product_page(update, "mine")
+
+    async def product_page(self, update, scope, category=None, before_id=None):
+        """Render live results; the button carries filters, never a seller identity."""
+        seller_view = scope == "mine"
         try:
-            products = await self.run(self.store.list_products, None,
-                                      update.effective_user.id)
+            products, has_more = await self.run(
+                self.store.list_products_page, category,
+                update.effective_user.id if seller_view else None, before_id=before_id,
+            )
         except Exception:
             await self.failure(update)
             return
+
+        navigation = []
+        prefix = f"prodpage:{scope}:{category or 'all'}:"
+        if has_more:
+            navigation.append(InlineKeyboardButton(
+                "Older products", callback_data=prefix + str(products[-1]["product_id"])))
+        if before_id is not None:
+            navigation.append(InlineKeyboardButton("Newest products", callback_data=prefix + "new"))
+        options = {"reply_markup": InlineKeyboardMarkup([navigation])} if navigation else {}
         if not products:
-            await update.effective_message.reply_text("You have no products yet. Use /addproduct.")
+            text = ("No older products remain. Return to the newest products."
+                    if before_id is not None else
+                    "You have no products yet. Use /addproduct." if seller_view else
+                    "No products yet in that category. Try /products all.")
+            await update.effective_message.reply_text(text, **options)
             return
         for offset in range(0, len(products), 5):
             await update.effective_message.reply_text(
-                "\n\n".join(product_text(product, seller_view=True)
+                "\n\n".join(product_text(product, seller_view=seller_view)
                             for product in products[offset:offset + 5])
             )
+        if seller_view:
+            if navigation:
+                await update.effective_message.reply_text("Your products: browse more below.", **options)
+        else:
+            await update.effective_message.reply_text(
+                "Use /product <catalog ID> to view a photo. The ID is the #number "
+                "before each product name.", **options,
+            )
+
+    async def product_page_action(self, update, context):
+        """Durable navigation must bypass conversation hints without changing state."""
+        query = update.callback_query
+        try:
+            if update.effective_chat.type != "private":
+                await query.answer("Please message me in a private chat.", show_alert=True)
+                return
+            await query.answer()
+            try:
+                data = query.data
+                if len(data.encode("utf-8")) > 64:
+                    raise ValueError
+                _, scope, category, raw = data.split(":")
+                if (scope not in ("all", "mine")
+                        or category not in (*CATEGORIES, "all")
+                        or (scope == "mine" and category != "all")):
+                    raise ValueError
+                before_id = None
+                if raw != "new":
+                    if not re.fullmatch(r"[0-9]{1,19}", raw):
+                        raise ValueError
+                    before_id = int(raw)
+                    if not 0 < before_id <= MAX_PRODUCT_ID:
+                        raise ValueError
+            except ValueError:
+                await query.message.reply_text(
+                    "Invalid product page. Use /products or /myproducts to browse again.")
+                return
+            await self.product_page(update, scope, None if category == "all" else category, before_id)
+        except Exception:
+            await self.failure(update)
+        finally:
+            # Stop subsequent handler groups, including active conversation catch-alls.
+            raise ApplicationHandlerStop
 
     async def product(self, update, context):
         try:
