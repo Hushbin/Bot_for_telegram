@@ -177,6 +177,16 @@ Local development continues using the ignored `.env` file and `SECRETS_SOURCE=en
 
 ### Recovery exports and health checks
 
+Recovery history is written with unique names and create-only requests; only
+`latest.json` is replaced after a complete export. The infrastructure recovery
+policy restricts overwrite to that exact pointer. The
+[infrastructure recovery runbook](https://github.com/Hushbin/oci-infra-for-telegram-bot/blob/main/docs/RECOVERY_AND_HEALTH.md#recovery-object-permissions-and-rollout)
+tracks rollout status and the live checks. After applying that policy, run
+`scripts/verify_recovery_permissions.py --namespace NAMESPACE` with the deployed
+Python environment on the bot VM to probe its instance-principal permissions.
+The probe prints exact disposable keys for operator cleanup and does not touch
+`latest.json` or real export/erasure records.
+
 The infrastructure repo creates `smebot-dev-recovery`, weekly boot-volume backup policies, and OCI health alarms before this release is deployed. The bot records an erasure marker there before `/deleteme` changes Oracle, so restoring an older daily export cannot reinstate erased profiles. If recovery storage is unavailable, erasure does not start and the user is asked to retry. Current live data is overwritten; exports have a seven-day lifecycle policy, and Oracle-managed backups currently retain copies for up to 60 days. The bot's privacy text explains this.
 
 After deployment, copy and install the four `smebot-export` and `smebot-health` systemd units from `deploy/` as root, run `systemctl daemon-reload`, and enable both timers with `systemctl enable --now smebot-export.timer smebot-health.timer`. Run `systemctl start smebot-export.service` once to establish the first export, then `systemctl start smebot-health.service` and inspect the unit journals and OCI metric streams. The export timer runs daily at 03:00 UTC; the health timer runs every five minutes. The health probe checks systemd, Telegram, Oracle, and export age, then publishes redacted metrics. The recovery runbook in the infrastructure repository covers database import, boot-volume restore, and periodic drills. Restore is an operator-only action against a **new, empty** database: point ignored local `.env` and `.setup.env` at that destination, then run `.venv/bin/python scripts/recovery.py restore exports/<selected>.manifest.json` from the laptop. Never run it against the live DB.

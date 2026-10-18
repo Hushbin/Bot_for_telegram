@@ -91,6 +91,62 @@ class RecoveryTests(unittest.TestCase):
         self.client = FakeObjectClient()
         self.storage = RecoveryStorage("namespace", "recovery", client=self.client)
 
+    def test_exports_create_unique_history_and_publish_latest_last(self):
+        with patch("recovery.utc_now", return_value=datetime(2026, 10, 18, tzinfo=timezone.utc)), \
+                patch.object(self.client, "put_object", wraps=self.client.put_object) as upload:
+            first = export_database(FakeConnection(), self.storage)
+            first_manifest = self.client.objects[first]
+            first_data_key = self.storage.get_json(first)["data_key"]
+            first_data = self.client.objects[first_data_key]
+            second = export_database(FakeConnection(), self.storage)
+
+        self.assertNotEqual(first, second)
+        second_data_key = self.storage.get_json(second)["data_key"]
+        calls = upload.call_args_list
+        self.assertEqual([call.args[2] for call in calls], [
+            first_data_key, first, "latest.json", second_data_key, second, "latest.json",
+        ])
+        for call in calls:
+            if call.args[2] == "latest.json":
+                self.assertNotIn("if_none_match", call.kwargs)
+            else:
+                self.assertEqual(call.kwargs.get("if_none_match"), "*")
+        self.assertEqual(self.client.objects[first], first_manifest)
+        self.assertEqual(self.client.objects[first_data_key], first_data)
+        self.assertEqual(self.storage.get_json("latest.json")["manifest_key"], second)
+
+    def test_repeated_erasure_creates_unique_markers(self):
+        with patch("recovery.utc_now", return_value=datetime(2026, 10, 18, tzinfo=timezone.utc)), \
+                patch.object(self.client, "put_object", wraps=self.client.put_object) as upload:
+            first = self.storage.record_erasure(123)
+            second = self.storage.record_erasure(123)
+
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.startswith("erasures/123/"))
+        self.assertTrue(second.startswith("erasures/123/"))
+        self.assertEqual(self.storage.get_json(first), self.storage.get_json(second))
+        self.assertEqual(len(upload.call_args_list), 2)
+        for call in upload.call_args_list:
+            self.assertEqual(call.kwargs.get("if_none_match"), "*")
+
+    def test_failed_data_or_manifest_upload_preserves_latest(self):
+        export_database(FakeConnection(), self.storage)
+        previous_latest = self.client.objects["latest.json"]
+        real_upload = self.client.put_object
+        for suffix in (".jsonl.gz", ".manifest.json"):
+            with self.subTest(failed_upload=suffix):
+                def fail_upload(namespace, bucket, key, body, **kwargs):
+                    if key.endswith(suffix):
+                        raise RuntimeError("Upload failed")
+                    return real_upload(namespace, bucket, key, body, **kwargs)
+
+                with patch.object(self.client, "put_object", side_effect=fail_upload) as upload:
+                    with self.assertRaisesRegex(RuntimeError, "Upload failed"):
+                        export_database(FakeConnection(), self.storage)
+
+                self.assertNotIn("latest.json", [call.args[2] for call in upload.call_args_list])
+                self.assertEqual(self.client.objects["latest.json"], previous_latest)
+
     def test_export_then_restore_excludes_post_snapshot_erasure(self):
         def row(table, owner):
             result = {column: None for column in TABLE_COLUMNS[table]}
