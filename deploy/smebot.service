@@ -9,6 +9,7 @@ User=smebot
 Group=smebot
 WorkingDirectory=/opt/smebot/current
 EnvironmentFile=/etc/smebot/bot.env
+EnvironmentFile=/opt/smebot/current/deploy/runtime.env
 ExecStart=/opt/smebot/current/.venv/bin/python -u /opt/smebot/current/main.py
 Restart=on-failure
 RestartSec=5

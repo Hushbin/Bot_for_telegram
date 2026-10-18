@@ -8,6 +8,7 @@ Type=oneshot
 User=smebot
 Group=smebot
 EnvironmentFile=/etc/smebot/bot.env
+EnvironmentFile=/opt/smebot/current/deploy/runtime.env
 WorkingDirectory=/opt/smebot/current
 ExecStart=/opt/smebot/current/.venv/bin/python scripts/recovery.py export
 PrivateTmp=true

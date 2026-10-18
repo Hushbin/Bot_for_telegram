@@ -25,8 +25,10 @@ need fresh review. Self-orders are rejected.
 
 ## Enable after migration
 
-`ORDERS_ENABLED=false` is the default. It blocks new purchases while preserving
-existing order histories, actions, expiry, delivery, erasure, and recovery.
+The application defaults to `ORDERS_ENABLED=false`; deployed releases set
+`ORDERS_ENABLED=true` in `deploy/runtime.env`. Setting it to false blocks new
+purchases while preserving existing order histories, actions, expiry, delivery,
+erasure, and recovery.
 For local development, set `APP_BACKEND=local`, a separate test `BOT_TOKEN`, and
 `ORDERS_ENABLED=true` in your ignored `.env`. SQLite upgrades automatically.
 
@@ -37,10 +39,13 @@ For Oracle deployment:
 2. Run `.venv/bin/python scripts/setup_db.py` using the existing secure setup
    configuration against the intended database. It adds `ORDERS` and
    `ORDER_NOTIFICATIONS`, indexes, and runtime DML grants, preserving existing data.
-3. Deploy the complete release with new ordering disabled. Verify catalog
-   behavior and a format-2 export before resuming export jobs.
-4. Set `ORDERS_ENABLED=true`, restart, and verify the purchase/accept/cancel flow
-   using separate buyer/seller accounts and an agreed test listing. Resume timers.
+3. For a staged rollout, commit `ORDERS_ENABLED=false` in `deploy/runtime.env`
+   and deploy the complete release. Verify catalog behavior and a format-2 export
+   before resuming export jobs. Existing VMs also need the one-time
+   [systemd update](../README.md#versioned-runtime-settings).
+4. Commit `ORDERS_ENABLED=true` in `deploy/runtime.env` and deploy through the
+   normal workflow. Verify the purchase/accept/cancel flow using separate
+   buyer/seller accounts and an agreed test listing. Resume timers.
 
 The schema owner's configured 20 MB quota is unchanged. Check live headroom as
 the schema owner before enabling:
@@ -51,9 +56,11 @@ SELECT tablespace_name, bytes, max_bytes FROM user_ts_quotas;
 ```
 
 Stock edits must leave room to return accepted quantities within the existing
-stock-column limit. New orders can be paused with `ORDERS_ENABLED=false` without
-losing existing order resolution. A pre-order release lacks five-table recovery
-and order erasure support, so reverting to it requires handling existing orders.
+stock-column limit. Pause new orders by committing `ORDERS_ENABLED=false` in
+`deploy/runtime.env` and deploying; existing order resolution remains available.
+The release file overrides any matching value in `/etc/smebot/bot.env`.
+A pre-order release lacks five-table recovery and order erasure support, so
+reverting to it requires handling existing orders.
 
 ## Privacy and recovery
 

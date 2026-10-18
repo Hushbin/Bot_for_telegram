@@ -16,7 +16,7 @@ See [docs/README.md](docs/README.md) for ordering, validation results and remain
 | `SME_SCHEMA.ORDERS` | Confirmed buyer requests | Participants, immutable price/contact snapshots, consent, status/version and expiry |
 | `SME_SCHEMA.ORDER_NOTIFICATIONS` | Durable seller and buyer alerts | Event version, recipient, retry schedule, delivery lease and outcome |
 
-Ordering is disabled by default (`ORDERS_ENABLED=false`). See [ordering guide](docs/ORDERING.md) for buyer/seller flows, migration and rollout. Pending orders reserve no stock; seller acceptance deducts stock atomically. Payment and fulfillment are arranged directly. Product photos stay in Object Storage; the database stores only their private object keys. Customer preference is one column because the current UI chooses one category. A Telegram user ID, rather than a chat ID or a temporary Fauna record ID, identifies a profile across restarts.
+Deployed releases enable ordering through [deploy/runtime.env](deploy/runtime.env) (`ORDERS_ENABLED=true`); local runs default to disabled. See [ordering guide](docs/ORDERING.md) for buyer/seller flows, migration and rollout. Pending orders reserve no stock; seller acceptance deducts stock atomically. Payment and fulfillment are arranged directly. Product photos stay in Object Storage; the database stores only their private object keys. Customer preference is one column because the current UI chooses one category. A Telegram user ID, rather than a chat ID or a temporary Fauna record ID, identifies a profile across restarts.
 
 The database's `product_id` identifies a product globally for buyers. Sellers also see a stable number within their own catalog, starting at `#1`; previous listings, including erased ones, keep their place so numbers are never reassigned. This number is derived from existing product rows, so it needs no schema migration.
 
@@ -161,6 +161,40 @@ One-time VM setup, from a trusted workstation that can SSH to the VM as `ubuntu`
    ```
 3. Put `tnsnames.ora` and `ewallet.pem` in `/etc/smebot/wallet`, owned by `root:smebot` with mode `0640`. Install [bot.env.example](deploy/bot.env.example) as `/etc/smebot/bot.env`, also owned by `root:smebot` with mode `0640`, after filling in the three Vault secret OCIDs, the development compartment OCID, and bot instance OCID. The file contains no token or passwords in Vault mode.
 4. Apply the infrastructure repository's `environments/host/` Terraform stack. Its `smebot-dev-bot-runtime` dynamic group matches **only** the bot VM. Separate policies allow media operations on `smebot-dev-media` and reading only the three named runtime secret bundles. Allow several minutes for a new OCI policy to take effect. The bot uses its [instance principal](https://docs.oracle.com/en-us/iaas/Content/Identity/Tasks/callingservicesfrominstances.htm) for both services.
+
+### Versioned runtime settings
+
+Systemd loads `/etc/smebot/bot.env` first, then
+`/opt/smebot/current/deploy/runtime.env`. Matching values in the release file win.
+Keep release-wide, non-secret settings such as `ORDERS_ENABLED` in
+[deploy/runtime.env](deploy/runtime.env). Keep database connections, Vault secret
+references, wallet paths, and instance-specific settings in `/etc/smebot/bot.env`;
+tokens and passwords continue to come from Vault. Local development still uses
+its ignored `.env`.
+
+The deployment archive includes `deploy/runtime.env`. Once the updated units are
+installed, each deployment and rollback loads the selected release's settings
+when the bot restarts. Configuration changes go through commits and the normal
+deployment workflow; deployments do not rewrite `/etc/smebot/bot.env`.
+
+For an existing VM, complete the [ordering migration](docs/ORDERING.md#enable-after-migration)
+and deploy a release containing `deploy/runtime.env` before updating systemd.
+Then run this one-time update on the VM as an administrator:
+
+```sh
+for unit in smebot.service smebot-export.service smebot-health.service; do
+  sudo install -m 0644 -o root -g root "/opt/smebot/current/deploy/$unit" "/etc/systemd/system/$unit"
+done
+sudo systemctl daemon-reload
+sudo systemctl restart smebot.service
+sudo systemctl is-active smebot.service
+```
+
+Health and export services read the new settings on their next invocation.
+Verify the buyer/seller flow after the restart. A release without
+`deploy/runtime.env` cannot start with these units: before rolling back to such
+a release, restore its previous service units and run `systemctl daemon-reload`.
+Also review the schema and order compatibility restrictions in the ordering guide.
 
 ### Move an existing VM to OCI Vault
 
