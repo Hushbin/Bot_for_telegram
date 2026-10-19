@@ -16,6 +16,7 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
 from abuse_limits import LimitError
+from product_media import remove_product, save_product_photo
 from orders import OrderError
 from product_photos import MAX_PHOTO_BYTES, prepare_photo
 
@@ -171,7 +172,7 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True, media
             elif path.startswith('/api/products/'):
                 pid = int(request.path_params['pid'])
                 if request.method == 'DELETE':
-                    await asyncio.to_thread(store.remove_seller_product, uid, pid)
+                    await asyncio.to_thread(remove_product, store, media, uid, pid)
                 else:
                     saved_product_id = await asyncio.to_thread(store.save_seller_product, uid, data, pid)
             elif path == '/api/profile':
@@ -252,26 +253,8 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True, media
                 except ValueError as exc:
                     return JSONResponse({'error': str(exc)}, 400)
 
-                def save_photo():
-                    # Run upload + attach + compensation in one worker. A disconnected
-                    # browser cannot cancel the database attach halfway through.
-                    key, version = media.put_product_photo(uid, pid, prepared)
-                    try:
-                        previous = store.replace_seller_product_photo(
-                            uid, pid, key, version, product.get('photo_object_key'))
-                    except Exception:
-                        try:
-                            media.delete_photo(key, version)
-                        except Exception:
-                            logging.getLogger(__name__).exception('Could not remove unattached seller photo')
-                        raise
-                    if previous[0]:
-                        try:
-                            media.delete_photo(*previous)
-                        except Exception:
-                            logging.getLogger(__name__).exception('Could not remove replaced seller photo')
-
-                await asyncio.to_thread(save_photo)
+                await asyncio.to_thread(save_product_photo, store, media, uid, pid, prepared,
+                                        product.get('photo_object_key'), product.get('photo_version_id'))
                 snapshot = await asyncio.to_thread(store.seller_snapshot, uid)
                 return JSONResponse(panel_state(snapshot, orders_enabled))
         except LimitError as exc:

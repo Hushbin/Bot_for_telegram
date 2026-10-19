@@ -19,6 +19,8 @@ from catalog import (
 )
 from abuse_limits import LimitError, summary_text as abuse_summary_text
 from photo_delivery import ProductPhotoDelivery
+from product_media import save_product_photo
+from product_management import ProductManagementMixin, PM_PHOTO, management_button
 
 
 LOG = logging.getLogger(__name__)
@@ -298,7 +300,7 @@ def browse_buttons():
     ])
 
 
-class BotHandlers:
+class BotHandlers(ProductManagementMixin):
     def __init__(self, store, media, erasures=None, orders_enabled=False):
         self.store = store
         self.media = media
@@ -314,7 +316,7 @@ class BotHandlers:
         raw = reference.strip().lower()
         catalog = raw.startswith("g")
         digits = raw[1:] if catalog else raw
-        if not re.fullmatch(r"[0-9]{1,19}", digits) or int(digits) <= 0:
+        if not re.fullmatch(r"[0-9]{1,19}", digits) or not 0 < int(digits) <= MAX_PRODUCT_ID:
             raise ValueError("Use your product number, or G followed by a catalog ID.")
         number = int(digits)
         if catalog:
@@ -331,7 +333,7 @@ class BotHandlers:
         for key in ("last_input", "draft", "pending_product_id",
                     "pending_product_number", "signup_role",
                     "phone_keyboard_active", "order_after_signup", "order_product_id", "order_draft",
-                    "product_draft"):
+                    "product_draft", "product_management", "pending_photo_revision"):
             context.user_data.pop(key, None)
 
     @staticmethod
@@ -388,6 +390,7 @@ class BotHandlers:
             "business": self.seller_details,
             "product": self.product_details,
             "product_entry": self.product_entry_text,
+            "product_edit": self.management_input,
         }.get(last["step"])
         return await step(update, context) if step else None
 
@@ -1030,49 +1033,45 @@ class BotHandlers:
                 "Use /addproduct or /photo <your product number> first."
             )
             return ConversationHandler.END
+        management = context.user_data.get('product_management', {}).get('phase') == 'photo'
+        retry_state = PM_PHOTO if management else PRODUCT_PHOTO
+        expected_key, expected_version = context.user_data.get('pending_photo_revision', (None, None))
         photo = update.effective_message.photo[-1]
         if photo.file_size and photo.file_size > MAX_PHOTO_BYTES:
             await update.effective_message.reply_text("Photo is too large. Send one under 5 MB or /skip.")
-            return PRODUCT_PHOTO
+            return retry_state
         try:
-            await self.run(self.store.admit_photo_upload, update.effective_user.id, product_id)
+            await self.run(self.store.admit_photo_upload, update.effective_user.id, product_id,
+                           expected_key, expected_version)
             telegram_file = await photo.get_file()
             output = io.BytesIO()
             await telegram_file.download_to_memory(out=output)
             raw = output.getvalue()
             if len(raw) > MAX_PHOTO_BYTES:
                 raise ValueError("Photo is too large")
-            key, version_id = await self.run(self.media.put_product_photo,
-                                             update.effective_user.id, product_id, raw)
-            try:
-                await self.run(self.store.replace_seller_product_photo,
-                               update.effective_user.id, product_id, key, version_id, None)
-            except Exception:
-                if version_id:
-                    try:
-                        await self.run(self.media.delete_version, key, version_id)
-                    except Exception:
-                        LOG.exception("Could not remove orphan photo version: %s", key)
-                else:
-                    LOG.error("Photo uploaded without version ID; inspect orphan key: %s", key)
-                raise
+            key, version_id = await self.run(save_product_photo, self.store, self.media,
+                                             update.effective_user.id, product_id, raw,
+                                             expected_key, expected_version)
         except LimitError as exc:
             await update.effective_message.reply_text(str(exc))
-            return PRODUCT_PHOTO
+            return retry_state
         except ValueError as exc:
             await update.effective_message.reply_text(f"{exc}. Try another photo or /skip.")
-            return PRODUCT_PHOTO
+            return retry_state
         except Exception:
             await self.failure(update)
-            return PRODUCT_PHOTO
+            return retry_state
         await ProductPhotoDelivery(self.store, self.media).remember(
             dict(product_id=product_id, photo_object_key=key, photo_version_id=version_id),
             context.bot.id, photo.file_id, getattr(update, 'update_id', None))
         context.user_data.pop("pending_product_id", None)
         context.user_data.pop("pending_product_number", None)
+        context.user_data.pop("pending_photo_revision", None)
         label = (f"your product #{seller_number}" if seller_number
                  else f"product #{product_id}")
         await update.effective_message.reply_text(f"Photo saved for {label}.")
+        if management:
+            return await self.management_photo_skip(update, context)
         return ConversationHandler.END
 
     async def add_photo(self, update, context):
@@ -1160,7 +1159,10 @@ class BotHandlers:
         for offset in range(0, len(products), 5):
             await update.effective_message.reply_text(
                 "\n\n".join(product_text(product, seller_view=seller_view)
-                            for product in products[offset:offset + 5])
+                            for product in products[offset:offset + 5]),
+                **({'reply_markup': InlineKeyboardMarkup([
+                    [management_button(product)] for product in products[offset:offset + 5]
+                ])} if seller_view else {})
             )
         if seller_view:
             if navigation:
@@ -1229,6 +1231,8 @@ class BotHandlers:
                 seller_view=current["seller_telegram_user_id"] == update.effective_user.id,
             )
             buttons = self.order_handlers.product_buttons(current, update.effective_user.id)
+            if current['seller_telegram_user_id'] == update.effective_user.id:
+                buttons = InlineKeyboardMarkup([[management_button(current)]])
             return caption, {"reply_markup": buttons} if buttons else {}
 
         if not product["photo_object_key"]:

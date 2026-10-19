@@ -14,6 +14,7 @@ from telegram.ext import (
 
 from config import load_settings
 from order_handlers import ORDER_ID, ORDER_QUANTITY, ORDER_CONFIRM
+from product_management import PM_ID, PM_MENU, PM_INPUT, PM_REVIEW, PM_REMOVE, PM_PHOTO
 from order_worker import OrderWorker
 from process_readiness import ProcessReadiness, ReadinessBot
 from handlers import (
@@ -39,7 +40,7 @@ PRIVATE_EDITED_TEXT = (filters.UpdateType.EDITED_MESSAGE & filters.ChatType.PRIV
 BOT_COMMANDS = (
     "menu", "start", "profile", "sellerprofile", "preferences", "addproduct",
     "photo", "products", "product", "myproducts", "stock", "privacy",
-    "mydata", "deleteme", "cancel", "skip", "order", "orders", "sales", "panel",
+    "mydata", "deleteme", "cancel", "skip", "order", "orders", "sales", "panel", "manageproduct",
 )
 
 COMMAND_DESCRIPTIONS = (
@@ -53,6 +54,7 @@ COMMAND_DESCRIPTIONS = (
     ("addproduct", "List a product"),
     ("photo", "Add a photo to a product"),
     ("myproducts", "See your listings"),
+    ("manageproduct", "Edit a listing, replace its photo or remove it"),
     ("stock", "Change product stock"),
     ("order", "Order a product"),
     ("orders", "See my orders"),
@@ -172,6 +174,8 @@ def build_application(settings=None, store=None, media=None):
     # time, any entry command replaces the current state, and one /cancel clears it.
     conversation = ConversationHandler(
         entry_points=[
+            CommandHandler("manageproduct", handlers.manage_product, filters=PRIVATE_COMMAND),
+            CallbackQueryHandler(handlers.management_action, pattern=r"^pm:"),
             CommandHandler("order", orders.start, filters=PRIVATE_COMMAND),
             CallbackQueryHandler(orders.start, pattern=r"^buy:"),
             CallbackQueryHandler(orders.confirm, pattern=r"^(confirm|discard):[0-9a-f]{32}$"),
@@ -190,6 +194,16 @@ def build_application(settings=None, store=None, media=None):
             CommandHandler("deleteme", handlers.delete_me, filters=PRIVATE_COMMAND),
         ],
         states={
+            PM_ID: [MessageHandler(PRIVATE_TEXT, handlers.management_id),
+                    *with_hint(handlers, "Please send your product number or G plus a catalog ID.")],
+            PM_MENU: [*with_hint(handlers, "Choose a product field or action above.")],
+            PM_INPUT: [MessageHandler(PRIVATE_TEXT, handlers.management_input),
+                       *with_hint(handlers, "Send the new field value or use the current buttons.")],
+            PM_REVIEW: [*with_hint(handlers, "Review the change and use Save, Back or Cancel.")],
+            PM_REMOVE: [*with_hint(handlers, "Confirm removal or use Back or Cancel.")],
+            PM_PHOTO: [MessageHandler(PRIVATE_COMMAND & filters.PHOTO, handlers.photo_for_product),
+                       CommandHandler("skip", handlers.management_photo_skip, filters=PRIVATE_COMMAND),
+                       *with_hint(handlers, "Send one photo up to 5 MB, or /skip.")],
             ORDER_ID: [MessageHandler(PRIVATE_TEXT, orders.product_id),
                        *with_hint(handlers, "Please send a catalog ID.")],
             ORDER_QUANTITY: [MessageHandler(PRIVATE_TEXT | PRIVATE_EDITED_TEXT, orders.quantity),
