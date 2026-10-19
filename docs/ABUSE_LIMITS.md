@@ -23,6 +23,10 @@ secrets and instance settings; the release file takes precedence under systemd.
 | `ABUSE_PHOTOS_DAILY` | 20 | Admitted upload attempts per seller per UTC day |
 | `ABUSE_PHOTO_COOLDOWN` | 10 | Seconds between admitted upload attempts |
 
+The code default is observation mode. The versioned release policy now sets
+`ABUSE_LIMITS_ENABLED=true`, following the verified observation deployment.
+Disabling enforcement still records admissions and preserves recovery blocks.
+
 Numeric environment settings must be integers from 1 to 1,000,000. Settings are
 validated at startup. All daily counters and cooldowns reset at midnight UTC.
 Cancellation, deletion, decline and expiry do not refund daily budgets. Accepted
@@ -105,7 +109,7 @@ Do not remove the ledger table or reset counters when disabling enforcement.
 
 ## Validation
 
-Implementation validation is recorded below after execution. Automated chat/API
+Automated chat/API
 checks simulate user traffic; a real buyer/seller Telegram acceptance journey is a
 separate manual check. Per-account budgets do not replace global quota monitoring.
 
@@ -121,7 +125,30 @@ Automated checks on **19 October 2026**:
 - Isolated Oracle five-to-six-table migration and repeat migration preserved a
   fixture. Its runtime identity could not read the live schema or DELETE the
   ledger. Format 1/2/3 restores, identity reseeding, recovery blocks and existing
-  order actions passed. Full Oracle suite and final rollout checks are pending.
+  order actions passed. The Oracle-enabled regression snapshot ran **472 tests,
+  all passed with no skips**. Seven final targeted Oracle assertions also passed,
+  covering subsequent concurrency, revision, rollover and rollback additions. All
+  disposable schemas/runtime identities were removed.
+- The final erasure-notice update passed all nine privacy tests. GitHub Python
+  3.10 PR checks passed in run `39313010597`; the merged observation release
+  passed test and deployment jobs in run `39314228991`.
 
 No production fixture orders or live fault injection were performed. A real
 buyer/seller Telegram journey has not been performed by these automated checks.
+
+Live observation verification on **19 October 2026**:
+
+- A fresh format-2 backup passed checksum, column and row-count validation before
+  the additive production migration. The six-table runtime check passed; ledger
+  grants are SELECT/INSERT/UPDATE only and the schema quota remains 20 MB.
+- Observation release `c0bdc83547d97febc64616745a25564c09396a62` was deployed through
+  [PR #3](https://github.com/Hushbin/Bot_for_telegram/pull/3) and normal GitHub CI.
+  All 91 tracked files matched the commit. The process had zero restarts, stable
+  readiness identity and the expected policy values with enforcement disabled.
+- Configuration, Telegram, database, backup and seller-API readiness checks passed.
+  A fresh format-3 backup then passed checksum and six-table row-count validation;
+  readiness also passed against that new backup. Scheduled exports resumed.
+- Retain `c0bdc83547d97febc64616745a25564c09396a62` as the format-3-compatible
+  observation fallback. The subsequent enforcement release changes the feature
+  flag only; numeric limits and persisted counters remain in place. Verify its
+  GitHub/local/VM identity and process flag after CI activation as described above.
