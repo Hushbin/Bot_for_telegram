@@ -19,6 +19,7 @@ class OrderWorker:
         return await asyncio.to_thread(fn, *args)
 
     async def run_once(self, batch_size=20):
+        await self.call(self.store.clear_expired_abuse_limits)
         await self.call(self.store.expire_orders)
         for _ in range(batch_size):
             event = await self.call(self.store.claim_notification)

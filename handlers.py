@@ -17,6 +17,7 @@ from telegram.ext import ApplicationHandlerStop, ConversationHandler
 from catalog import (
     CATEGORIES, DEFAULT_CURRENCY, MINOR_UNITS_PER_MAJOR, MAX_PRODUCT_ID, category_label,
 )
+from abuse_limits import LimitError, summary_text as abuse_summary_text
 from photo_delivery import ProductPhotoDelivery
 
 
@@ -38,6 +39,9 @@ PRIVACY_NOTICE = (
     "and products with photos;\n"
     "- orders: buyer and seller IDs, product and listing names, quantity, confirmed "
     "price, buyer name and phone snapshot, consent version, status and notification delivery.\n\n"
+    "- abuse prevention: live UTC-day listing/order counts, photo attempts and last-action "
+    "times linked to your Telegram ID; retained through erasure until midnight UTC. "
+    "Expired counters are cleared automatically; recovery may pause new activity until midnight.\n\n"
     "Who can see it: the bot operator sees stored data. Product listings are public. "
     "When you confirm an order, your name and phone are shared with that seller, "
     "as shown on the confirmation screen. Email is not shared. Order details are "
@@ -394,6 +398,7 @@ class BotHandlers:
         try:
             user = await self.run(self.store.get_user, update.effective_user.id)
             seller = products = None
+            counters = await self.run(self.store.abuse_summary, update.effective_user.id)
             if user:
                 seller = await self.run(self.store.get_seller, update.effective_user.id)
                 products = await self.run(self.store.count_products, update.effective_user.id)
@@ -402,10 +407,15 @@ class BotHandlers:
             return
         if not user:
             await update.effective_message.reply_text(
+                ("Your profile has been erased. Abuse-prevention counters remain until midnight.\n"
+                 + abuse_summary_text(counters)) if counters else
                 "I have no data stored about you. Use /start to register."
             )
             return
         await update.effective_message.reply_text(stored_data_text(user, seller, products))
+        if counters:
+            await update.effective_message.reply_text(
+                abuse_summary_text(counters))
         await update.effective_message.reply_text(
             "Order snapshots and consent records: use /orders for your purchases and "
             "/sales for incoming orders, then open each order. Your confirmed name and "
@@ -432,7 +442,8 @@ class BotHandlers:
             "photos from the live service. Recovery exports expire after seven days "
             "(OCI deletion may take another day); managed database backups can last "
             "up to 60 days. A restore will honor this erasure. Open orders are cancelled "
-            "and your order contacts are scrubbed. Redacted order history remains; "
+            "and your order contacts are scrubbed. Current UTC-day abuse-prevention counters "
+            "remain until midnight UTC. Redacted order history remains; "
             "copies delivered in Telegram cannot reliably be recalled. Continue?",
             reply_markup=buttons,
         )
@@ -869,6 +880,9 @@ class BotHandlers:
         try:
             product_id, seller_number = await self.run(
                 self.store.create_product, update.effective_user.id, *fields, True)
+        except LimitError as exc:
+            await message.reply_text(str(exc))
+            return PRODUCT_DETAILS
         except Exception:
             await self.failure(update)
             return PRODUCT_DETAILS
@@ -996,6 +1010,9 @@ class BotHandlers:
                       clean_product_stock(str(values["stock_quantity"])))
             product_id, seller_number = await self.run(
                 self.store.create_product, update.effective_user.id, *fields, True)
+        except LimitError as exc:
+            await query.message.reply_text(str(exc))
+            return await self.product_entry_prompt(update, context, "review")
         except Exception:
             LOG.exception("Could not save guided product")
             await query.message.reply_text(
@@ -1018,6 +1035,7 @@ class BotHandlers:
             await update.effective_message.reply_text("Photo is too large. Send one under 5 MB or /skip.")
             return PRODUCT_PHOTO
         try:
+            await self.run(self.store.admit_photo_upload, update.effective_user.id, product_id)
             telegram_file = await photo.get_file()
             output = io.BytesIO()
             await telegram_file.download_to_memory(out=output)
@@ -1027,8 +1045,8 @@ class BotHandlers:
             key, version_id = await self.run(self.media.put_product_photo,
                                              update.effective_user.id, product_id, raw)
             try:
-                await self.run(self.store.set_product_photo,
-                               update.effective_user.id, product_id, key, version_id)
+                await self.run(self.store.replace_seller_product_photo,
+                               update.effective_user.id, product_id, key, version_id, None)
             except Exception:
                 if version_id:
                     try:
@@ -1038,6 +1056,9 @@ class BotHandlers:
                 else:
                     LOG.error("Photo uploaded without version ID; inspect orphan key: %s", key)
                 raise
+        except LimitError as exc:
+            await update.effective_message.reply_text(str(exc))
+            return PRODUCT_PHOTO
         except ValueError as exc:
             await update.effective_message.reply_text(f"{exc}. Try another photo or /skip.")
             return PRODUCT_PHOTO

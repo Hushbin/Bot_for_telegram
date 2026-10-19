@@ -114,6 +114,8 @@ def build_application(settings=None, store=None, media=None):
                                    auth=settings.oci_auth,
                                    config_file=settings.oci_config_file,
                                    profile=settings.oci_profile)
+    from abuse_limits import AbuseLimits
+    store.abuse_limits = getattr(settings, 'abuse_limits', AbuseLimits())
     store.check()
     handlers = BotHandlers(store, media, erasures, getattr(settings, "orders_enabled", False))
     orders = handlers.order_handlers

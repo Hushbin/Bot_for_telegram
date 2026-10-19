@@ -34,6 +34,11 @@ class FakeStore(SQLiteStore):
     def products(self):
         return self._dictionary("products", "product_id")
 
+    def replace_seller_product_photo(self, *args):
+        if self.fail_photo_update:
+            raise RuntimeError("Database unavailable")
+        return super().replace_seller_product_photo(*args)
+
     def set_product_photo(self, user_id, product_id, key, version_id=None):
         if self.fail_photo_update:
             raise RuntimeError("Database unavailable")

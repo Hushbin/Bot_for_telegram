@@ -103,6 +103,21 @@ class ProductEntryTests(WiringTestCase):
     def count(self, uid=100):
         return self.store.count_products(uid)
 
+    async def test_limited_guided_save_preserves_draft_and_can_retry(self):
+        from abuse_limits import AbuseLimits
+        from datetime import timedelta
+        await self.through()
+        self.store.abuse_limits = AbuseLimits(enabled=True, listings_daily=1)
+        self.store.create_product(100, 'Existing', 'art', None, 100, 1)
+        draft = self.app.user_data[100]['product_draft'].copy()
+        texts = await self.press(self.button('Save product'))
+        self.assertIn('Daily listing limit', '\n'.join(texts))
+        self.assertEqual(self.app.user_data[100]['product_draft']['fields'], draft['fields'])
+        now = self.store.order_now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        self.store.order_clock = lambda: now
+        await self.press(self.button('Save product'))
+        self.assertEqual(self.count(), 2)
+
     async def test_complete_guided_entry_saves_only_after_review(self):
         review = await self.through()
         self.assertEqual(self.count(), 0)

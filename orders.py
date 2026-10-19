@@ -13,7 +13,8 @@ QUOTE_FIELDS = ('product_id', 'seller_id', 'product_name', 'seller_name', 'unit_
                 'currency', 'quantity', 'buyer_name', 'buyer_phone', 'buyer_phone_verified')
 TIME_COLUMNS = {'created_at', 'updated_at', 'expires_at', 'decided_at', 'completed_at',
                 'buyer_erased_at', 'seller_erased_at', 'confirmed_at', 'next_attempt_at',
-                'lease_until', 'delivered_at', 'deleted_at'}
+                'lease_until', 'delivered_at', 'deleted_at', 'window_start', 'last_listing_at',
+                'last_order_at', 'last_photo_at', 'blocked_until'}
 
 
 class OrderError(ValueError):

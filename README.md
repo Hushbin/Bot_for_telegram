@@ -270,3 +270,7 @@ If a runner is killed before cleanup, the next serialized deployment removes lef
 ## Seller web panel
 
 Sellers can manage their catalog and orders in the [web panel](https://144.24.232.0). Send `/panel` in a private chat for a sign-in link. See [configuration and API details](docs/SELLER_PANEL.md).
+
+New listing, order and photo-upload budgets are documented in
+[durable account limits](docs/ABUSE_LIMITS.md), including migration, observation,
+recovery compatibility and enforcement rollout.

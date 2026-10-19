@@ -104,3 +104,17 @@ CREATE TABLE order_notifications (
     UNIQUE (order_id, order_version, recipient_id)
 );
 CREATE INDEX order_notify_due_idx ON order_notifications(state, next_attempt_at);
+
+
+-- One reusable row per Telegram account; survives account erasure until UTC rollover.
+CREATE TABLE abuse_limits (
+    telegram_user_id NUMBER(19) PRIMARY KEY REFERENCES users(telegram_user_id),
+    window_start TIMESTAMP WITH TIME ZONE NOT NULL,
+    listing_count NUMBER(10) DEFAULT 0 NOT NULL CHECK (listing_count >= 0),
+    order_count NUMBER(10) DEFAULT 0 NOT NULL CHECK (order_count >= 0),
+    photo_attempt_count NUMBER(10) DEFAULT 0 NOT NULL CHECK (photo_attempt_count >= 0),
+    last_listing_at TIMESTAMP WITH TIME ZONE,
+    last_order_at TIMESTAMP WITH TIME ZONE,
+    last_photo_at TIMESTAMP WITH TIME ZONE,
+    blocked_until TIMESTAMP WITH TIME ZONE
+);

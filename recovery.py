@@ -5,7 +5,7 @@ import hashlib
 import json
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 from pathlib import Path
 from uuid import uuid4
@@ -16,6 +16,8 @@ import oracledb
 from database import SCHEMA
 from order_schema import TABLE_COLUMNS as ORDER_TABLE_COLUMNS
 from orders import TIME_COLUMNS
+from abuse_schema import TABLE_COLUMNS as ABUSE_TABLE_COLUMNS
+from abuse_limits import midnight
 
 
 LEGACY_TABLE_COLUMNS = {
@@ -28,9 +30,10 @@ LEGACY_TABLE_COLUMNS = {
                  "photo_object_key", "photo_version_id", "deleted_at", "created_at",
                  "updated_at"),
 }
-TABLE_COLUMNS = {**LEGACY_TABLE_COLUMNS, **ORDER_TABLE_COLUMNS}
+FORMAT2_TABLE_COLUMNS = {**LEGACY_TABLE_COLUMNS, **ORDER_TABLE_COLUMNS}
+TABLE_COLUMNS = {**FORMAT2_TABLE_COLUMNS, **ABUSE_TABLE_COLUMNS}
 TIMESTAMP_COLUMNS = TIME_COLUMNS
-EXPORT_FORMAT = 2
+EXPORT_FORMAT = 3
 
 
 def utc_now():
@@ -120,7 +123,7 @@ def export_database(connection, storage):
 
 
 def _export_database(connection, storage):
-    """Read all five tables in one Oracle read-only transaction."""
+    """Read all six tables in one Oracle read-only transaction."""
     export_id = utc_now().strftime("%Y%m%dT%H%M%SZ") + "-" + uuid4().hex
     data_key = f"exports/{export_id}.jsonl.gz"
     manifest_key = f"exports/{export_id}.manifest.json"
@@ -206,9 +209,9 @@ def restore_database(connection, storage, manifest_key):
         raise ValueError("Expected an exports/*.manifest.json key")
     manifest = storage.get_json(manifest_key)
     export_format = manifest.get("format")
-    if export_format not in (1, EXPORT_FORMAT):
+    if export_format not in (1, 2, EXPORT_FORMAT):
         raise ValueError("Unsupported export format")
-    source_columns = LEGACY_TABLE_COLUMNS if export_format == 1 else TABLE_COLUMNS
+    source_columns = {1: LEGACY_TABLE_COLUMNS, 2: FORMAT2_TABLE_COLUMNS, 3: TABLE_COLUMNS}[export_format]
     if set(manifest.get("counts", {})) != set(source_columns):
         raise ValueError("Export table set differs from schema")
     snapshot_at = datetime.fromisoformat(manifest["snapshot_at"])
@@ -279,6 +282,25 @@ def restore_database(connection, storage, manifest_key):
                 raise ValueError("Export row count mismatch")
             if storage.erasures_after(snapshot_at) != erased_ids:
                 raise ValueError("Erasure markers changed during restore; retry against an empty destination")
+            # A snapshot cannot contain post-snapshot admissions. Prevent a restored
+            # account from obtaining a second daily budget, even from format 1/2.
+            start = midnight(utc_now())
+            cursor.setinputsizes(window_floor=oracledb.DB_TYPE_TIMESTAMP_TZ)
+            cursor.execute(f"INSERT INTO {SCHEMA}.ABUSE_LIMITS (telegram_user_id, window_start) "
+                           f"SELECT telegram_user_id, :window_floor FROM {SCHEMA}.USERS u WHERE NOT EXISTS "
+                           f"(SELECT 1 FROM {SCHEMA}.ABUSE_LIMITS a WHERE a.telegram_user_id = u.telegram_user_id)",
+                           {'window_floor': start})
+            # Do not revive expired admission metadata from an older snapshot.
+            cursor.setinputsizes(window_floor=oracledb.DB_TYPE_TIMESTAMP_TZ)
+            cursor.execute(f"UPDATE {SCHEMA}.ABUSE_LIMITS SET window_start = :window_floor, "
+                           'listing_count = 0, order_count = 0, photo_attempt_count = 0, '
+                           'last_listing_at = NULL, last_order_at = NULL, last_photo_at = NULL '
+                           'WHERE window_start < :window_floor', {'window_floor': start})
+            cursor.setinputsizes(block_end=oracledb.DB_TYPE_TIMESTAMP_TZ)
+            cursor.execute(f"UPDATE {SCHEMA}.ABUSE_LIMITS SET blocked_until = :block_end",
+                           {'block_end': start + timedelta(days=1)})
+            cursor.execute(f"SELECT COUNT(*) FROM {SCHEMA}.ABUSE_LIMITS")
+            imported['ABUSE_LIMITS'] = int(cursor.fetchone()[0])
         connection.commit()
         # DDL commits implicitly in Oracle, so reseed only after the verified data
         # transaction has committed. A failure must keep the bot stopped.

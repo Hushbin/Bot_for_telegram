@@ -8,6 +8,7 @@ from uuid import uuid4
 from catalog import LEGACY_CATEGORY_LABELS, PRODUCT_PAGE_SIZE, validate_product_cursor
 from order_store import OrderDB, OrderStoreMixin
 from seller_store import SellerStoreMixin
+from abuse_schema import SCHEMA as ABUSE_SCHEMA, TABLE_COLUMNS as ABUSE_TABLE_COLUMNS
 from order_schema import SCHEMA as ORDER_SCHEMA, TABLE_COLUMNS as ORDER_TABLE_COLUMNS
 
 
@@ -85,7 +86,7 @@ PRODUCT_COLUMNS = """
 """
 
 
-SCHEMA += ORDER_SCHEMA
+SCHEMA += ORDER_SCHEMA + ABUSE_SCHEMA
 
 
 class SQLiteStore(SellerStoreMixin, OrderStoreMixin):
@@ -136,7 +137,7 @@ class SQLiteStore(SellerStoreMixin, OrderStoreMixin):
             connection.execute("SELECT COUNT(*) FROM users").fetchone()
             connection.execute("SELECT telegram_photo_file_id, telegram_photo_bot_id, "
                                "photo_version_id FROM products WHERE 1 = 0")
-            for table, columns in ORDER_TABLE_COLUMNS.items():
+            for table, columns in {**ORDER_TABLE_COLUMNS, **ABUSE_TABLE_COLUMNS}.items():
                 connection.execute(f"SELECT {', '.join(columns)} FROM {table} WHERE 1 = 0")
 
     def get_user(self, telegram_user_id):
@@ -201,24 +202,6 @@ class SQLiteStore(SellerStoreMixin, OrderStoreMixin):
                 (telegram_user_id,),
             ).fetchone()
             return dict(row) if row else None
-
-    def create_product(self, seller_id, name, category, description,
-                       price_minor, stock_quantity, with_number=False):
-        with self.connect() as connection:
-            cursor = connection.execute("""
-                INSERT INTO products (seller_telegram_user_id, name, category,
-                                      description, price_minor, stock_quantity)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (seller_id, name, category, description,
-                  price_minor, stock_quantity))
-            product_id = cursor.lastrowid
-            if not with_number:
-                return product_id
-            seller_number = connection.execute("""
-                SELECT COUNT(*) FROM products
-                WHERE seller_telegram_user_id = ? AND product_id <= ?
-            """, (seller_id, product_id)).fetchone()[0]
-            return product_id, seller_number
 
     def update_product(self, seller_id, product_id, name, category, description,
                        price_minor, stock_quantity):
