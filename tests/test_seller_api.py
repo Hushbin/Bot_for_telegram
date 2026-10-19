@@ -158,6 +158,32 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
                                      content=image_bytes() if raw is None else raw,
                                      headers={'Content-Type': 'image/png', 'If-Match': revision, **headers})
 
+    async def test_pending_removal_conflict_and_expired_pending_does_not_block(self):
+        from datetime import timedelta
+        order = self.order()
+        response = await self.client.request('DELETE', f'/api/products/{self.pid}', json={})
+        self.assertEqual(response.status_code, 409)
+        self.assertIn('/sales', response.json()['error'])
+        self.store.order_clock = lambda: order['expires_at'] + timedelta(seconds=1)
+        self.assertEqual((await self.client.request('DELETE', f'/api/products/{self.pid}', json={})).status_code, 200)
+        self.assertEqual(self.store.get_order(order['order_id'], 3)['status'], 'PENDING')
+
+    async def test_removal_deletes_exact_photo_and_retries_failed_cleanup(self):
+        await self.upload()
+        product = self.store.get_product(self.pid)
+        key, version = product['photo_object_key'], product['photo_version_id']
+        with patch.object(self.media, 'delete_photo', side_effect=RuntimeError('offline')):
+            with self.assertLogs('product_media', level='ERROR'):
+                response = await self.client.request('DELETE', f'/api/products/{self.pid}', json={})
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(self.store.get_product(self.pid))
+        self.assertTrue(self.media._path(key).exists())
+        with patch.object(self.media, 'delete_photo', wraps=self.media.delete_photo) as delete:
+            response = await self.client.request('DELETE', f'/api/products/{self.pid}', json={})
+            self.assertEqual(response.status_code, 200)
+            delete.assert_called_once_with(key, version)
+        self.assertFalse(self.media._path(key).exists())
+
     async def test_listing_quota_returns_stable_code_and_keeps_edits_available(self):
         from abuse_limits import AbuseLimits
         self.store.abuse_limits = AbuseLimits(enabled=True, listings_daily=1)

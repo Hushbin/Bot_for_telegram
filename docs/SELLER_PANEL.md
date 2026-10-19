@@ -24,13 +24,18 @@ localStorage. Do not forward sign-in links.
 Authenticated `GET /api/state` returns only the seller's profile/products/orders.
 `POST /api/products`, `PUT/DELETE /api/products/{id}`, and `PUT /api/profile` write
 the existing tables. `POST /api/orders/{id}` uses `change_order` and its version,
-stock, expiry and notification behavior. Products with accepted orders cannot be
-removed. Removal is soft deletion and retains order history. Product edits supply
+stock, expiry and notification behavior. Products with accepted or unexpired
+pending orders cannot be removed (HTTP 409). Elapsed pending requests do not
+block deletion. Removal is soft deletion, retains order history and promptly
+deletes the stored photo version. Product edits supply
 `expected_stock` to reject reservations made while an editor was open.
 
 The panel supports the bot's actual order lifecycle. Shipping, draft publication,
 private notes and online payments from design concepts are not implemented.
 Photos are visible in the product list/editor and can be uploaded or replaced in the panel. Telegram's `/photo` remains available for products without a photo. The bot and panel use USD cents.
+Telegram also offers `/manageproduct` and Manage buttons for field editing,
+replacement and removal. Both interfaces use the shared
+[product-management safeguards and cleanup service](PRODUCT_MANAGEMENT.md).
 
 ## Verification
 

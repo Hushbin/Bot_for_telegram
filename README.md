@@ -125,6 +125,7 @@ Telegram's command menu lists every command. `/menu` opens a button menu for the
 | `/orders` | View your purchases and cancel pending requests |
 | `/sales` | View incoming orders, accept/decline, fulfill or cancel accepted orders |
 | `/myproducts` | Browse your listings, 20 per page, with Older and Newest buttons |
+| `/manageproduct [number]` | Edit a field, add/replace a photo or confirm removal; prefix a global catalog ID with `G` |
 | `/stock [number quantity]` | Set stock using your seller product number; prefix a global catalog ID with `G` |
 | `/cancel`, `/skip` | Cancel the current conversation, or skip an optional description or photo with `/skip` |
 
@@ -139,6 +140,14 @@ Unfinished drafts are lost on restart. See [guided product entry](docs/GUIDED_PR
 for corrections, validation and save-failure behavior.
 
 A photo must be at most 5 MB. The bot uploads it to a unique private object key and stores the key on the product row. If the database update fails after upload, the bot deletes that exact object version. Photos are never given public Object Storage URLs; `/product` reads the object through the bot's OCI identity and sends it to Telegram.
+
+Use **Manage** in `/myproducts` or your own product view to edit fields after a
+review, replace a photo or confirm removal. Pending and accepted orders must be
+resolved before removal (elapsed pending requests do not block it). Removal
+hides the listing, retains order history and promptly deletes its photo; older
+backups may therefore refer to missing media. See
+[product management](docs/PRODUCT_MANAGEMENT.md) for concurrency, cleanup and
+restart behavior.
 
 For example, if your first listing has catalog ID `#3`, you see `Your product #1 (catalog ID #3)`. Use `/stock 1 5` or `/photo 1` for your own listing; buyers use `/product 3` or `/product #3`. When the bot asks for a catalog ID, replying `3` or `#3` works. `/stock G3 5` and `/photo G3` also accept the global catalog ID explicitly.
 
