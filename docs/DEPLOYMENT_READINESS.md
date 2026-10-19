@@ -194,6 +194,63 @@ archive/settings retention, redaction, helper argument/path restrictions,
 lifecycle gating, optional seller startup, read-only SQL/Telegram calls and the
 existing health metric contract.
 
-VM installation, test-VM failure drills and live manual chat acceptance have
-**not** been performed for this change. They remain rollout work even when the
-local suite passes.
+## VM rollout and operational checks
+
+Completed on **19 October 2026**, after the local suite above passed. Application
+commit `4cad5257815ebcfef94053bb24acfa798d0ea632` was archived from Git, its
+pinned/hash-verified wheels were built on the Ubuntu 22.04 bot VM as
+`smebot-deploy`, and it was deployed through the existing activator first. The
+previous release `a4dd710b9e571cf1672662a0935bd54156132fa4` remains on disk.
+Root-owned copies of the original activator, service and sudo rules are retained
+under `/root/smebot-readiness-recovery/`.
+
+Before enabling enforcement, a separate disposable Ubuntu 24.04 ARM64 VM ran
+the actual root-installed controller/helper, service unit and narrow sudo rules
+with synthetic bot/probe fixtures. No production credentials were passed to the
+fixtures. These systemd drills passed:
+
+- Healthy activation selected the candidate and removed its archive.
+- A dead candidate restored the previous ready release once, retained its archive
+  and returned a deployment failure.
+- A dependency outage introduced after a healthy baseline failed both releases'
+  dependency probes, kept the running candidate selected and retained its archive.
+- An invalid helper argument was rejected.
+- A hung probe and its child were terminated by the helper's actual systemd
+  deadline after **43.11 seconds**.
+
+The disposable VM was stopped and deleted after the drills. Failure injection
+was confined to that VM; the live bot was not used as a failure fixture.
+
+On the live Ubuntu 22.04 x86-64 VM, stage 1 published a fresh signal matching the
+release, systemd invocation and PID. All five read-only checks passed in about
+14 seconds, including Oracle schema reads and latest-export pointer, manifest
+and data-object metadata access. The helper was then installed and all five
+checks passed again when invoked through sudo as `smebot-deploy`.
+
+After installing enforcement, **the same verified release was re-activated**
+through the new activator. Baseline and candidate probes passed, the candidate
+reported `ready`, activation returned success and the incoming archive was
+removed. This validates the live success path; distinct-release rollback and
+outage behavior were tested in the disposable VM rather than induced live.
+
+Final live checks passed:
+
+- One bot process, active service, zero systemd restarts and the same matching
+  PID/invocation across an additional 11-second observation.
+- The running process's non-secret `ORDERS_ENABLED` flag was `true`.
+- Installed controller/helper/activator hashes matched the release; their owner
+  was root, and sudoers validation passed. The validator reported an existing
+  unused Oracle Cloud Agent command alias; parsing still succeeded.
+- `smebot-health.service` finished with `Result=success`, exit status 0 and
+  `service=1, telegram=1, database=1, backup=1`; metric publication returned
+  without error. Alarm delivery was not exercised.
+- The seller HTTPS `/api/health` endpoint returned `{"status":"ok"}` with normal
+  TLS validation, and both health/export timers were active.
+
+The deployment used the existing trusted administrator SSH connection, not a
+GitHub workflow run. The implementation and this operational record were
+committed locally; this operation did not push or merge the branch. Future
+workflow deployments must include the probe-capable implementation.
+
+Manual buyer/seller Telegram chat acceptance remains **unperformed**. These
+checks did not send chat messages, create orders/products or change the schema.
