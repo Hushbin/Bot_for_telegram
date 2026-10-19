@@ -15,6 +15,7 @@ from telegram.ext import (
 from config import load_settings
 from order_handlers import ORDER_ID, ORDER_QUANTITY, ORDER_CONFIRM
 from order_worker import OrderWorker
+from process_readiness import ProcessReadiness, ReadinessBot
 from handlers import (
     BotHandlers, CHOOSING, CLASS_STATE, SME_DETAILS, CHOOSE_PREF,
     PRODUCT_DETAILS, PRODUCT_PHOTO, PHONE, CONFIRM_ERASE, PRODUCT_ID, PHOTO_ID,
@@ -93,6 +94,7 @@ def with_hint(handlers, prompt):
 
 
 def build_application(settings=None, store=None, media=None):
+    readiness = ProcessReadiness.for_process()
     settings = settings or load_settings()
     if store is None or media is None:
         if settings.backend == "local":
@@ -142,15 +144,21 @@ def build_application(settings=None, store=None, media=None):
         worker = OrderWorker(store, application.bot)
         worker_holder["worker"] = worker
         worker.start()
+        guards = [lambda: worker.task is not None and not worker.task.done(),
+                  lambda: application.running and application.updater.running]
+        if panel:
+            guards.append(lambda: panel.task is not None and not panel.task.done())
+        readiness.runtime_started(*guards)
 
     async def stop_runtime(application):
+        readiness.stop()
         if panel:
             await panel.stop()
         worker = worker_holder.get("worker")
         if worker is not None:
             await worker.stop()
 
-    application = (ApplicationBuilder().token(settings.bot_token)
+    application = (ApplicationBuilder().bot(ReadinessBot(settings.bot_token, readiness))
                    .concurrent_updates(False).post_init(start_runtime)
                    .post_stop(stop_runtime).post_shutdown(stop_runtime).build())
     application.add_handler(CallbackQueryHandler(

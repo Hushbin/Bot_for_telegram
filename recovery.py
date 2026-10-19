@@ -74,8 +74,8 @@ class RecoveryStorage:
             kwargs["if_none_match"] = "*"
         self.client.put_object(self.namespace, self.bucket, key, body, **kwargs)
 
-    def get_json(self, key):
-        return json.loads(self.client.get_object(self.namespace, self.bucket, key).data.content)
+    def get_json(self, key, **kwargs):
+        return json.loads(self.client.get_object(self.namespace, self.bucket, key, **kwargs).data.content)
 
     def record_erasure(self, telegram_user_id):
         timestamp = utc_now().isoformat()
@@ -102,8 +102,8 @@ class RecoveryStorage:
                 break
         return erased_ids
 
-    def latest_export_age(self):
-        latest = self.get_json("latest.json")
+    def latest_export_age(self, latest=None):
+        latest = self.get_json("latest.json") if latest is None else latest
         return (utc_now() - as_utc(datetime.fromisoformat(latest["snapshot_at"]))).total_seconds()
 
 

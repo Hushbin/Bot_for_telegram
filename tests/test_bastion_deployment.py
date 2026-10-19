@@ -189,6 +189,20 @@ class OrchestrationTests(unittest.TestCase):
             self.assertEqual(30, popen.call_count)
             popen.return_value.terminate.assert_called()
 
+    def test_cleanup_failure_distinguishes_success_and_preserves_activation_error(self):
+        for activation_failure in (None, RuntimeError('activation_not_ready')):
+            with self.subTest(failure=activation_failure), patch.object(deployment, 'BastionAccess') as access, \
+                 patch.object(deployment.urllib.request, 'urlopen') as url, \
+                 patch.object(deployment.subprocess, 'run'), patch.object(Path, 'read_text', return_value='public'):
+                access.return_value.cleanup.side_effect = RuntimeError('PRIVATE SECRET')
+                url.return_value.__enter__.return_value.read.return_value = b'203.0.113.8'
+                def transfer(*args):
+                    if activation_failure:
+                        raise activation_failure
+                with self.assertRaisesRegex(RuntimeError, 'activation_not_ready' if activation_failure
+                                             else 'cleanup failed after successful activation'):
+                    deployment.run(self.env(), client_factory=lambda *a, **kw: object(), transfer=transfer)
+
 
 if __name__ == '__main__':
     unittest.main()

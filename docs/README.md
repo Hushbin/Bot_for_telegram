@@ -11,6 +11,8 @@ Setup, configuration, commands, privacy and VM deployment are documented in the
 | [Improvement suggestions](IMPROVEMENT_SUGGESTIONS.md) | Remaining application and deployment improvements checked against current source |
 | [Catalog browsing](CATALOG_PAGINATION.md) | Product pagination, navigation behavior and validation |
 | [Guided product entry](GUIDED_PRODUCT_ENTRY.md) | Listing wizard, compact shortcut, corrections, save failures and validation |
+| [Oracle connection measurements](DATABASE_CONNECTION_METRICS.md) | Safe opening-time logs, local summary commands, interpretation and validation |
+| [Deployment readiness](DEPLOYMENT_READINESS.md) | Process/dependency checks, outage classification, bounded rollback, staged installation and validation |
 
 Infrastructure resources, backup operations and secret rotation are documented in
 [the infrastructure repository](https://github.com/Hushbin/oci-infra-for-telegram-bot/tree/main/docs).

@@ -1,7 +1,6 @@
 """VM export/health jobs and operator-only import into an empty Oracle schema."""
 
 import argparse
-import asyncio
 import getpass
 import logging
 import os
@@ -16,12 +15,11 @@ sys.path.insert(0, str(ROOT))
 import oci  # noqa: E402
 import oracledb  # noqa: E402
 from dotenv import load_dotenv  # noqa: E402
-from telegram import Bot  # noqa: E402
-from telegram.request import HTTPXRequest  # noqa: E402
 
 from config import load_settings  # noqa: E402
 from database import OracleStore, SCHEMA  # noqa: E402
 from recovery import RecoveryStorage, export_database, restore_database  # noqa: E402
+from readiness import collect_report  # noqa: E402
 
 
 def vm_storage(settings):
@@ -37,12 +35,6 @@ def export_job():
     with store.connect() as connection:
         key = export_database(connection, vm_storage(settings))
     print(f"Completed logical export: {key}")
-
-
-async def telegram_ok(token):
-    request = HTTPXRequest(connect_timeout=5, read_timeout=5, write_timeout=5)
-    async with Bot(token=token, request=request) as bot:
-        await bot.get_me()
 
 
 def publish_health(values, compartment_id, instance_id):
@@ -67,32 +59,15 @@ def health_job():
     instance_id = os.environ["OCI_INSTANCE_OCID"]
     values = {"service": False, "telegram": False, "database": False,
               "backup": False}
-    values["service"] = subprocess.run(
-        ["systemctl", "is-active", "--quiet", "smebot.service"], check=False,
-        timeout=5).returncode == 0
     try:
-        settings = load_settings()
-    except Exception:
-        # The service/Vault failure is represented by zero-valued metrics.
-        settings = None
-    if settings is not None:
-        try:
-            asyncio.run(telegram_ok(settings.bot_token))
-            values["telegram"] = True
-        except Exception:
-            pass
-        try:
-            with OracleStore(settings).connect() as connection:
-                with connection.cursor() as cursor:
-                    cursor.execute("SELECT 1 FROM dual")
-                    values["database"] = cursor.fetchone()[0] == 1
-        except Exception:
-            pass
-        try:
-            # A daily export is allowed up to 36 hours to finish.
-            values["backup"] = vm_storage(settings).latest_export_age() < 36 * 3600
-        except Exception:
-            pass
+        values["service"] = subprocess.run(
+            ["systemctl", "is-active", "--quiet", "smebot.service"], check=False,
+            timeout=5).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    report = collect_report(ROOT.name)
+    for name in ('telegram', 'database', 'backup'):
+        values[name] = report['checks'][name]['status'] == 'pass'
     publish_health(values, compartment_id, instance_id)
     print("Health: " + ", ".join(f"{name}={int(ok)}" for name, ok in values.items()))
     return 0 if all(values.values()) else 1
