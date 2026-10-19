@@ -39,7 +39,7 @@ PRIVACY_NOTICE = (
     "and products with photos;\n"
     "- orders: buyer and seller IDs, product and listing names, quantity, confirmed "
     "price, buyer name and phone snapshot, consent version, status and notification delivery.\n\n"
-    "- abuse prevention: current UTC-day listing/order counts, photo attempts and last-action "
+    "- abuse prevention: live UTC-day listing/order counts, photo attempts and last-action "
     "times linked to your Telegram ID; retained through erasure until midnight UTC. "
     "Expired counters are cleared automatically; recovery may pause new activity until midnight.\n\n"
     "Who can see it: the bot operator sees stored data. Product listings are public. "
@@ -442,7 +442,8 @@ class BotHandlers:
             "photos from the live service. Recovery exports expire after seven days "
             "(OCI deletion may take another day); managed database backups can last "
             "up to 60 days. A restore will honor this erasure. Open orders are cancelled "
-            "and your order contacts are scrubbed. Redacted order history remains; "
+            "and your order contacts are scrubbed. Current UTC-day abuse-prevention counters "
+            "remain until midnight UTC. Redacted order history remains; "
             "copies delivered in Telegram cannot reliably be recalled. Continue?",
             reply_markup=buttons,
         )
