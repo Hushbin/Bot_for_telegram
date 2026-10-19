@@ -403,7 +403,7 @@ class PrivacyTests(WiringTestCase):
         self.assertIsNone(self.store.get_seller(66))
         self.assertEqual(self.store.list_products(), [])
         self.assertEqual(self.store.get_user(67)["full_name"], "Jane Doe")
-        self.assertIn("no data stored", (await self.say(66, "/mydata"))[0])
+        self.assertIn("counters remain until midnight", (await self.say(66, "/mydata"))[0])
         # An erased user is a stranger again and can start over.
         self.assertIn("Welcome to SMEbot", (await self.say(66, "/start"))[0])
 

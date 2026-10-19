@@ -50,7 +50,7 @@ def backup_ok(settings):
     if not key.startswith('exports/') or not key.endswith('.manifest.json'):
         raise ValueError('Invalid manifest')
     manifest = storage.get_json(key, retry_strategy=oci.retry.NoneRetryStrategy())
-    if manifest['snapshot_at'] != latest['snapshot_at'] or manifest['format'] not in (1, 2):
+    if manifest['snapshot_at'] != latest['snapshot_at'] or manifest['format'] not in (1, 2, 3):
         raise ValueError('Invalid manifest')
     data_key = manifest['data_key']
     if not data_key.startswith('exports/'):

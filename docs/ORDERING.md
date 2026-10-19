@@ -76,14 +76,18 @@ remain for history and inventory consistency. Re-registration cannot reveal old
 erased contacts. Telegram messages already delivered, including a send racing
 erasure, cannot reliably be recalled.
 
-Format-2 exports include all five tables in one consistent Oracle snapshot.
-Restore also accepts format-1 backups, leaving order tables empty. Format-2
-restore honors erasure of either party, keeps scrubbed foreign-key tombstones,
+Current format-3 exports include all six tables, including the admission ledger,
+in one consistent Oracle snapshot. Restore also accepts format-1 (three-table)
+and format-2 (five-table) backups. Format-1 leaves order tables empty. Restore
+honors erasure of either party, keeps scrubbed foreign-key tombstones,
 reconciles stock, and reseeds product, order, and notification identities.
 Restored unsent notifications are suppressed to prevent replaying old contacts.
 Keep the old bot stopped while restoring; new erasure markers during import cause
 rollback. Review open orders, stock, redaction, and post-snapshot activity before
 switching the live DSN. Activity after the selected snapshot may be missing.
+Every restored account is blocked from new listings, orders and uploads until
+midnight UTC, including in observation mode; existing order actions stay available.
+See [account limits](ABUSE_LIMITS.md) for migration and rollback compatibility.
 
 ## Tests
 

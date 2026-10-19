@@ -1,5 +1,5 @@
 """Five-table recovery with real foreign keys and atomic rollback in SQLite."""
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -8,7 +8,8 @@ from unittest.mock import patch
 from uuid import uuid4
 
 from local_backend import SQLiteStore
-from recovery import RecoveryStorage, TABLE_COLUMNS, export_database, restore_database
+from abuse_limits import AbuseLimits, LimitError, midnight
+from recovery import FORMAT2_TABLE_COLUMNS, LEGACY_TABLE_COLUMNS, RecoveryStorage, TABLE_COLUMNS, export_database, restore_database
 from test_recovery import FakeObjectClient
 
 
@@ -91,11 +92,17 @@ class OrderRecoveryTests(unittest.TestCase):
 
     def test_roundtrip_retains_relationships_and_suppresses_unsent(self):
         counts = self.restore()
-        self.assertEqual(counts, dict(USERS=2, SELLERS=1, PRODUCTS=1, ORDERS=1, ORDER_NOTIFICATIONS=2))
+        self.assertEqual(counts, dict(USERS=2, SELLERS=1, PRODUCTS=1, ORDERS=1, ORDER_NOTIFICATIONS=2, ABUSE_LIMITS=2))
         self.assertEqual(self.target.get_order(1, 1)['status'], 'ACCEPTED')
         self.assertEqual(self.target.get_product(1)['stock_quantity'], 3)
         self.assertIsNone(self.target.claim_notification())
         self.assertEqual(self.dst.db.execute('PRAGMA foreign_key_check').fetchall(), [])
+        self.target.abuse_limits = AbuseLimits(enabled=False)
+        with self.assertRaises(LimitError) as caught:
+            self.target.create_product(2, 'New', 'art', None, 100, 1)
+        self.assertEqual(caught.exception.code, 'restore_block')
+        until = self.target.abuse_summary(2)['blocked_until']
+        self.target.order_clock = lambda: until
         self.assertGreater(self.target.create_product(2, 'New', 'art', None, 100, 1), 1)
 
     def test_erased_buyer_cancels_and_restores_stock(self):
@@ -133,6 +140,44 @@ class OrderRecoveryTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'markers changed'):
                 restore_database(self.dst, self.storage, self.key)
         self.assertEqual(self.dst.db.execute('SELECT COUNT(*) FROM users').fetchone()[0], 0)
+
+    def test_all_formats_restore_barrier_and_allow_existing_actions(self):
+        from recovery import export_database
+        for version, columns in ((1, LEGACY_TABLE_COLUMNS), (2, FORMAT2_TABLE_COLUMNS), (3, TABLE_COLUMNS)):
+            with self.subTest(format=version):
+                with patch('recovery.EXPORT_FORMAT', version), patch('recovery.TABLE_COLUMNS', columns):
+                    key = export_database(self.src, self.storage)
+                with self.target.connect() as connection:
+                    for table in reversed(TABLE_COLUMNS):
+                        connection.execute(f'DELETE FROM {table}')
+                with patch.object(self.storage, 'erasures_after', return_value=set()):
+                    counts = restore_database(self.dst, self.storage, key)
+                self.assertEqual(counts['ABUSE_LIMITS'], 2)
+                self.target.abuse_limits = AbuseLimits(enabled=False)
+                for uid in (1, 2):
+                    with self.target.order_transaction() as db:
+                        row = db.one('SELECT * FROM abuse_limits WHERE telegram_user_id=:account_id', account_id=uid)
+                    self.assertGreater(row['blocked_until'], datetime.now(timezone.utc))
+                with self.assertRaises(LimitError):
+                    self.target.create_product(2, 'Blocked', 'art', None, 100, 1)
+                with self.assertRaises(LimitError):
+                    self.target.admit_photo_upload(2, self.pid)
+                with self.assertRaises(LimitError):
+                    self.target.create_order(1, self.target.quote_order(1, self.pid, 1), uuid4().hex)
+                if version > 1:
+                    self.target.change_order(1, 2, 'complete', 2)
+
+    def test_restore_clears_expired_metadata_before_applying_barrier(self):
+        future = datetime.now(timezone.utc) + timedelta(days=1)
+        self.target.order_clock = lambda: future
+        with patch('recovery.utc_now', return_value=future):
+            self.restore()
+        for uid in (1, 2):
+            row = self.target.abuse_summary(uid)
+            self.assertEqual((row['listing_count'], row['order_count'], row['photo_attempt_count']), (0, 0, 0))
+            self.assertIsNone(row['last_listing_at'])
+            self.assertIsNone(row['last_order_at'])
+            self.assertEqual(row['blocked_until'], midnight(future) + timedelta(days=1))
 
     def test_unknown_format_rejected(self):
         manifest = self.storage.get_json(self.key)

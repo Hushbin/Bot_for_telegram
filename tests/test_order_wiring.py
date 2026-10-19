@@ -30,6 +30,22 @@ class OrderWiringTests(WiringTestCase):
             'message': self._message(1, message_id=message_id or draft['message_id'], text='summary')})
         return await self.feed(query)
 
+    async def test_limit_preserves_confirmation_draft_for_retry(self):
+        from abuse_limits import AbuseLimits
+        from datetime import timedelta
+        self.seed()
+        self.store.abuse_limits = AbuseLimits(enabled=True)
+        draft = await self.draft()
+        await self.confirm(draft)
+        draft = await self.draft()
+        texts = await self.confirm(draft)
+        self.assertIn('Please wait', '\n'.join(texts))
+        self.assertEqual(self.app.user_data[1]['order_draft'], draft)
+        now = self.store.order_now() + timedelta(seconds=30)
+        self.store.order_clock = lambda: now
+        await self.confirm(draft)
+        self.assertEqual(len(self.store.list_orders(1)), 2)
+
     async def test_purchase_notify_accept_complete(self):
         self.seed()
         draft = await self.draft()

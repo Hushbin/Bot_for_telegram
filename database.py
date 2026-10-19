@@ -9,6 +9,7 @@ import oracledb
 from catalog import PRODUCT_PAGE_SIZE, validate_product_cursor
 from order_store import OrderDB, OrderStoreMixin
 from seller_store import SellerStoreMixin
+from abuse_schema import TABLE_COLUMNS as ABUSE_TABLE_COLUMNS
 from order_schema import TABLE_COLUMNS as ORDER_TABLE_COLUMNS
 
 
@@ -22,6 +23,7 @@ REQUIRED_COLUMNS = {
     "PRODUCTS": ("product_id", "deleted_at", "photo_version_id", "price_minor", "currency",
                  "telegram_photo_file_id", "telegram_photo_bot_id"),
     **ORDER_TABLE_COLUMNS,
+    **ABUSE_TABLE_COLUMNS,
 }
 
 
@@ -48,6 +50,8 @@ def _record_connection_open(started, outcome, error_type=None):
 
 class OracleStore(SellerStoreMixin, OrderStoreMixin):
     def __init__(self, settings):
+        from abuse_limits import AbuseLimits
+        self.abuse_limits = getattr(settings, 'abuse_limits', AbuseLimits())
         self.schema = getattr(settings, "db_schema", None) or SCHEMA
         self.connection_args = dict(
             user=settings.db_user,
@@ -185,32 +189,6 @@ class OracleStore(SellerStoreMixin, OrderStoreMixin):
                     WHERE telegram_user_id = :id AND deleted_at IS NULL
                 """, id=telegram_user_id)
                 return row_dict(cursor, cursor.fetchone())
-
-    def create_product(self, seller_id, name, category, description,
-                       price_minor, stock_quantity, with_number=False):
-        with self.connect() as connection:
-            with connection.cursor() as cursor:
-                new_id = cursor.var(oracledb.DB_TYPE_NUMBER)
-                cursor.execute(f"""
-                    INSERT INTO {self.schema}.PRODUCTS
-                        (seller_telegram_user_id, name, category, description,
-                         price_minor, stock_quantity)
-                    VALUES (:seller_id, :name, :category, :description,
-                            :price_minor, :stock_quantity)
-                    RETURNING product_id INTO :new_id
-                """, seller_id=seller_id, name=name, category=category,
-                    description=description, price_minor=price_minor,
-                    stock_quantity=stock_quantity, new_id=new_id)
-                product_id = int(new_id.getvalue()[0])
-                if with_number:
-                    cursor.execute(f"""
-                        SELECT COUNT(*) FROM {self.schema}.PRODUCTS
-                        WHERE seller_telegram_user_id = :seller_id
-                          AND product_id <= :product_id
-                    """, seller_id=seller_id, product_id=product_id)
-                    seller_number = int(cursor.fetchone()[0])
-            connection.commit()
-        return (product_id, seller_number) if with_number else product_id
 
     def update_product(self, seller_id, product_id, name, category, description,
                        price_minor, stock_quantity):

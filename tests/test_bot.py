@@ -83,6 +83,26 @@ class BotFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(self.store.get_user(42))
         self.assertIn("could not start", message.replies[0][1])
 
+    async def test_limited_compact_create_and_photo_preserve_flow(self):
+        from abuse_limits import AbuseLimits
+        from unittest.mock import AsyncMock
+        await self.register()
+        self.store.upsert_seller(42, 'Shop', 's@example.com', 'Online', '+1234567890')
+        self.store.create_product(42, 'First', 'art', None, 100, 2)
+        self.store.abuse_limits = AbuseLimits(enabled=True, listings_daily=1, photos_daily=1)
+        message = FakeMessage('Second | art | 1 | 2 | desc')
+        self.assertEqual(await self.bot.product_details(update(message), self.context), PRODUCT_DETAILS)
+        self.assertIn('Daily listing limit', message.replies[0][1])
+        self.context.user_data['pending_product_id'] = 1
+        self.store.admit_photo_upload(42, 1)
+        photo = FakePhoto()
+        photo.get_file = AsyncMock()
+        message = FakeMessage(photo=[photo])
+        self.assertEqual(await self.bot.photo_for_product(update(message), self.context), PRODUCT_PHOTO)
+        photo.get_file.assert_not_called()
+        self.assertEqual(self.context.user_data['pending_product_id'], 1)
+        self.assertEqual(self.store.abuse_summary(42)['photo_attempt_count'], 1)
+
     async def test_seller_product_photo_and_repeat_start(self):
         first = FakeMessage()
         self.assertEqual(await self.bot.start(update(first), self.context), CLASS_STATE)

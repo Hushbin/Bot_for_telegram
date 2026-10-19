@@ -15,6 +15,7 @@ from starlette.requests import Request
 from starlette.responses import JSONResponse, Response
 from starlette.routing import Route
 
+from abuse_limits import LimitError
 from orders import OrderError
 from product_photos import MAX_PHOTO_BYTES, prepare_photo
 
@@ -195,6 +196,9 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True, media
             if saved_product_id is not None:
                 result['saved_product_id'] = int(saved_product_id)
             return JSONResponse(result)
+        except LimitError as exc:
+            headers = {'Retry-After': str(exc.retry_after)} if exc.retry_after is not None else {}
+            return JSONResponse({'error': str(exc), 'code': exc.code}, exc.status, headers=headers)
         except OrderError as exc:
             status = {'permission': 403, 'missing': 404, 'conflict': 409, 'stock': 409}.get(exc.code, 400)
             return JSONResponse({'error': str(exc)}, status)
@@ -230,6 +234,14 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True, media
                     return Response(raw, media_type=content_type)
                 if request.headers.get('if-match') != photo_revision(product):
                     raise OrderError('conflict', 'The photo changed. Reopen the product before uploading again.')
+                length = request.headers.get('content-length')
+                if length is not None:
+                    if not length.isascii() or not length.isdecimal():
+                        return JSONResponse({'error': 'Invalid content length.'}, 400)
+                    if int(length) > MAX_PHOTO_BYTES:
+                        return JSONResponse({'error': 'Choose a photo up to 5 MB.'}, 413)
+                await asyncio.to_thread(store.admit_photo_upload, uid, pid,
+                                        product.get('photo_object_key'), product.get('photo_version_id'))
                 raw = bytearray()
                 async for chunk in request.stream():
                     raw.extend(chunk)
@@ -262,6 +274,9 @@ def create_api(store, sessions, origin, bot_username, orders_enabled=True, media
                 await asyncio.to_thread(save_photo)
                 snapshot = await asyncio.to_thread(store.seller_snapshot, uid)
                 return JSONResponse(panel_state(snapshot, orders_enabled))
+        except LimitError as exc:
+            headers = {'Retry-After': str(exc.retry_after)} if exc.retry_after is not None else {}
+            return JSONResponse({'error': str(exc), 'code': exc.code}, exc.status, headers=headers)
         except OrderError as exc:
             return JSONResponse({'error': str(exc)}, {'permission': 403, 'missing': 404, 'conflict': 409}.get(exc.code, 400))
         except FileNotFoundError:

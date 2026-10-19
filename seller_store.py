@@ -78,7 +78,9 @@ class SellerStoreMixin:
             data = {key: values[key] for key in
                     ('name', 'description', 'category', 'price_minor', 'stock_quantity')}
             data['name'] = name.strip()
+            data['description'] = description or None
             if pid is None:
+                self._admit(db, uid, 'listing')
                 return db.insert('products', dict(data, seller_telegram_user_id=uid), 'product_id')
             product = self._product(db, pid, lock=True)
             if not product or product['seller_telegram_user_id'] != uid or product['deleted_at']:
@@ -91,6 +93,19 @@ class SellerStoreMixin:
             db.execute(f"UPDATE {db.table('products')} SET {assignments} WHERE product_id = :pid",
                        **data, pid=pid)
             return pid
+
+    def create_product(self, seller_id, name, category, description,
+                       price_minor, stock_quantity, with_number=False):
+        # Use precisely the same admission and validation path as the seller API.
+        pid = self.save_seller_product(seller_id, dict(name=name, category=category,
+            description=description or '', price_minor=price_minor, stock_quantity=stock_quantity))
+        if not with_number:
+            return pid
+        with self.order_transaction() as db:
+            number = db.one(f"SELECT COUNT(*) AS count FROM {db.table('products')} "
+                            'WHERE seller_telegram_user_id = :account_id AND product_id <= :pid',
+                            account_id=seller_id, pid=pid)['count']
+            return pid, int(number)
 
     def remove_seller_product(self, uid, pid):
         with self.order_transaction(True) as db:

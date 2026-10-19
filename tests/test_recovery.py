@@ -47,10 +47,21 @@ class FakeCursor:
         elif sql == "SELECT SYSTIMESTAMP FROM dual":
             self.result = [(datetime(2026, 10, 15, tzinfo=timezone.utc),)]
         elif sql.startswith("SELECT COUNT(*) FROM SME_SCHEMA."):
-            self.result = [(0,)]
+            table = sql.rsplit('.', 1)[1]
+            count = sum(statement.startswith(f'INSERT INTO SME_SCHEMA.{table} (')
+                        for statement, _ in self.connection.inserted)
+            if table == 'ABUSE_LIMITS':
+                count += self.connection.synthesized_limits
+            self.result = [(count,)]
         elif sql.startswith("SELECT "):
             table = sql.rsplit(".", 1)[1]
             self.result = self.connection.rows[table]
+        elif sql.startswith("INSERT INTO SME_SCHEMA.ABUSE_LIMITS") and 'SELECT telegram_user_id' in sql:
+            users = {values['telegram_user_id'] for statement, values in self.connection.inserted
+                     if statement.startswith('INSERT INTO SME_SCHEMA.USERS ')}
+            existing = {values['telegram_user_id'] for statement, values in self.connection.inserted
+                        if statement.startswith('INSERT INTO SME_SCHEMA.ABUSE_LIMITS ')}
+            self.connection.synthesized_limits = len(users - existing)
         elif sql.startswith("INSERT INTO"):
             self.connection.inserted.append((sql, binds))
             self.result = []
@@ -73,6 +84,7 @@ class FakeConnection:
         self.rows = rows or {table: [] for table in TABLE_COLUMNS}
         self.statements = []
         self.inserted = []
+        self.synthesized_limits = 0
         self.commits = 0
         self.rollbacks = 0
 
@@ -169,7 +181,7 @@ class RecoveryTests(unittest.TestCase):
         }).encode()
         target = FakeConnection()
         counts = restore_database(target, self.storage, manifest_key)
-        self.assertEqual(counts, {table: int(table in LEGACY_TABLE_COLUMNS) for table in TABLE_COLUMNS})
+        self.assertEqual(counts, {table: int(table in LEGACY_TABLE_COLUMNS or table == "ABUSE_LIMITS") for table in TABLE_COLUMNS})
         self.assertEqual([binds.get("telegram_user_id", binds.get("seller_telegram_user_id"))
                           for _, binds in target.inserted], [22, 22, 22])
         self.assertEqual(target.commits, 1)

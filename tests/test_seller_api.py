@@ -158,6 +158,40 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
                                      content=image_bytes() if raw is None else raw,
                                      headers={'Content-Type': 'image/png', 'If-Match': revision, **headers})
 
+    async def test_listing_quota_returns_stable_code_and_keeps_edits_available(self):
+        from abuse_limits import AbuseLimits
+        self.store.abuse_limits = AbuseLimits(enabled=True, listings_daily=1)
+        response = await self.client.post('/api/products', json=self.data)
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.json()['code'], 'listing_daily')
+        self.assertGreater(int(response.headers['retry-after']), 0)
+        self.assertEqual((await self.client.put(f'/api/products/{self.pid}', json=self.data)).status_code, 200)
+        self.store.abuse_limits = AbuseLimits(enabled=True, active_listings=1)
+        # Cooldown has elapsed before testing the independent capacity response.
+        from datetime import timedelta
+        now = self.store.order_now() + timedelta(seconds=10)
+        self.store.order_clock = lambda: now
+        response = await self.client.post('/api/products', json=self.data)
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.json()['code'], 'active_listings')
+        self.assertNotIn('retry-after', response.headers)
+
+    async def test_upload_denials_do_not_consume_and_admitted_failure_does(self):
+        from abuse_limits import AbuseLimits
+        self.store.abuse_limits = AbuseLimits(enabled=True, photos_daily=1)
+        self.assertEqual((await self.upload(pid=self.other_pid)).status_code, 404)
+        self.assertEqual((await self.upload(revision='stale')).status_code, 409)
+        self.assertEqual((await self.upload(**{'Content-Length': str(MAX_PHOTO_BYTES + 1)})).status_code, 413)
+        self.assertEqual(self.store.abuse_summary(1)['photo_attempt_count'], 0)
+        self.assertEqual((await self.upload(b'not an image')).status_code, 400)
+        self.assertEqual(self.store.abuse_summary(1)['photo_attempt_count'], 1)
+        with patch.object(self.media, 'put_product_photo') as upload:
+            response = await self.upload()
+            self.assertEqual(response.status_code, 429)
+            self.assertEqual(response.json()['code'], 'photo_daily')
+            upload.assert_not_called()
+        self.assertIsNone(self.store.get_product(self.pid)['photo_object_key'])
+
     async def test_upload_is_shared_with_bot_and_authenticated_preview(self):
         response = await self.upload()
         self.assertEqual(response.status_code, 200)
@@ -239,6 +273,7 @@ class SellerApiTests(unittest.IsolatedAsyncioTestCase):
             with self.assertLogs('seller_api', level='ERROR'):
                 response = await self.upload()
         self.assertEqual(response.status_code, 503)
+        self.assertEqual(self.store.abuse_summary(1)['photo_attempt_count'], 1)
         self.assertIsNone(self.store.get_product(self.pid)['photo_object_key'])
         self.assertEqual(list(self.media.directory.rglob('*.jpg')), [])
 

@@ -30,6 +30,10 @@ and after); the new ordering tables were empty. Runtime SELECT/INSERT/UPDATE
 grants were verified, with no DELETE grant. Allocated schema segments remained
 0.5 MB under the unchanged 20 MB quota.
 
+For the subsequent format-3 admission-controls release, follow
+[the account-limits rollout](ABUSE_LIMITS.md#rollout) and its compatible rollback
+baseline. The sequence below records the original ordering rollout.
+
 Follow [the staged rollout](ORDERING.md#enable-after-migration): verify the final
 old-release backup before migration, deploy with ordering disabled, verify a
 five-table format-2 backup, then enable ordering and check service, Telegram,

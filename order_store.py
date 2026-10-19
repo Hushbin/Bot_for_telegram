@@ -8,6 +8,8 @@ from datetime import datetime, timedelta
 import re
 from uuid import uuid4
 
+from abuse_limits import AbuseStoreMixin
+
 from orders import (CONSENT_VERSION, PENDING_HOURS, QUOTE_FIELDS, TIME_COLUMNS,
                     OrderError, as_utc, positive_int, quote_values)
 
@@ -79,7 +81,7 @@ class OrderDB:
                                    'WHERE telegram_user_id = :account_id'), account_id=uid)
 
 
-class OrderStoreMixin:
+class OrderStoreMixin(AbuseStoreMixin):
     @contextmanager
     def order_transaction(self, write=False):
         with self.connect() as connection:
@@ -173,6 +175,7 @@ class OrderStoreMixin:
             if any(quote.get(key) != current[key] for key in QUOTE_FIELDS):
                 raise OrderError('quote', 'The listing or your contact details changed. Review a new summary.')
             now = self._order_now(db)
+            self._admit(db, buyer_id, 'order', current['seller_id'])
             values = dict(current, buyer_id=buyer_id, consent_version=CONSENT_VERSION,
                           confirmation_key=confirmation_key, status='PENDING', version=1,
                           created_at=now, updated_at=now, confirmed_at=now,

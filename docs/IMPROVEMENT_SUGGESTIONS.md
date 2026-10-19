@@ -25,11 +25,11 @@ The following improvements remain open.
 | 5.2 | Edit/remove listings and replace photos | The UI offers stock changes and initial photo upload, but no general edit/delete commands or photo replacement. Store `update_product` methods support correction of the latest input, not a complete editing UI. Preserve confirmed order snapshots and ensure erasure and version-specific photo cleanup remain correct. |
 | 6.1 | Conversation timeout and restart recovery | `main.py` has no configured conversation timeout or persistence. Saved orders/actions survive restarts, but unfinished registration, product entry and unconfirmed order drafts do not. Choose a deliberate resume or restart policy before adding persistence; preserve confirmation and consent requirements. |
 | 6.2 | Database connection reuse | Connections remain per operation. [Opening-time measurements and a local summarizer](DATABASE_CONNECTION_METRICS.md) were implemented on 18 October 2026; collect representative observations before deciding whether to introduce a bounded pool. Preserve transaction boundaries and per-user conversation safety. |
-| 6.5 | Abuse limits | There is a 5 MB photo limit, but no per-seller listing cap or application-level per-user write cooldown. Define limits that protect the database quota and storage allowance, including order/notification growth. |
+| 6.5 | Abuse limits | Phase 1 implements durable per-account listing, order and upload budgets; see [account limits](ABUSE_LIMITS.md). Global capacity monitoring, historical-data retention, registration abuse and general request limits remain open. |
 
 ## Suggested sequence
 
-1. Define abuse limits before wider use; roll out the implemented readiness gate in stages.
+1. Roll out the implemented per-account limits in stages; define global capacity and retention controls before wider use.
 2. Add listing management to the Telegram UI; the seller panel already provides it.
 3. Decide draft timeout/restart behavior; add connection reuse when measurements
    justify it.

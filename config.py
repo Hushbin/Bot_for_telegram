@@ -6,6 +6,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from abuse_limits import AbuseLimits
 from vault_secrets import load_vault_secrets
 
 
@@ -31,12 +32,14 @@ class Settings:
     oci_profile: str
     local_db_path: str
     local_media_dir: str
+    abuse_limits: AbuseLimits = field(default_factory=AbuseLimits)
     orders_enabled: bool = False
     seller_panel_url: str = ''
     seller_api_port: int = 8081
 
 
 def load_settings() -> Settings:
+    abuse_limits = AbuseLimits.from_environment(os.environ)
     backend = os.getenv("APP_BACKEND", "oci").lower()
     if backend not in ("oci", "local"):
         raise ValueError("APP_BACKEND must be oci or local")
@@ -83,6 +86,7 @@ def load_settings() -> Settings:
     local_root = Path(__file__).resolve().parent / ".local"
     return Settings(
         backend=backend,
+        abuse_limits=abuse_limits,
         orders_enabled=orders_enabled == "true",
         seller_panel_url=os.getenv('SELLER_PANEL_URL', '').rstrip('/'),
         seller_api_port=int(os.getenv('SELLER_API_PORT', '8081')),

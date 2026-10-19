@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ApplicationHandlerStop, ConversationHandler
+from abuse_limits import LimitError
 from orders import OrderError, STATUS_LABELS, order_text, positive_int, summary_text
 
 LOG = logging.getLogger(__name__)
@@ -154,6 +155,8 @@ class OrderHandlers:
             order = await self.run(self.store.create_order, update.effective_user.id, draft['quote'], key)
         except OrderError as exc:
             await query.message.reply_text(str(exc))
+            if isinstance(exc, LimitError):
+                return ORDER_CONFIRM
             if exc.code in ('quote', 'stock'):
                 context.user_data.pop('order_draft', None)
                 await query.message.reply_text('Send the quantity again to review a new summary.')
