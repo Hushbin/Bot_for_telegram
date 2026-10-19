@@ -9,8 +9,10 @@ fi
 revision=$1
 archive=/opt/smebot/incoming/${revision}.tar.gz
 release=/opt/smebot/releases/${revision}
-current=/opt/smebot/current
 [[ $(id -un) == smebot-deploy ]]
+# GitHub serializes workflow jobs; this also serializes local/manual activations.
+exec 9>/opt/smebot/.activation.lock
+flock -n 9 || { echo 'Activation rejected: activation_in_progress' >&2; exit 1; }
 [[ -f $archive ]]
 printf '%s  %s\n' "$2" "$archive" | sha256sum -c -
 if [[ ! -x $release/.venv/bin/python ]]; then
@@ -25,26 +27,5 @@ if [[ ! -x $release/.venv/bin/python ]]; then
   trap - ERR
 fi
 
-previous=$(readlink -f "$current" || true)
-ln -s "$release" /opt/smebot/.next
-mv -Tf /opt/smebot/.next "$current"
-if ! sudo -n /usr/bin/systemctl restart smebot.service; then
-  if [[ -n $previous ]]; then
-    ln -s "$previous" /opt/smebot/.next
-    mv -Tf /opt/smebot/.next "$current"
-    sudo -n /usr/bin/systemctl restart smebot.service || true
-  fi
-  exit 1
-fi
-sleep 10
-if ! systemctl is-active --quiet smebot.service; then
-  if [[ -n $previous ]]; then
-    ln -s "$previous" /opt/smebot/.next
-    mv -Tf /opt/smebot/.next "$current"
-    sudo -n /usr/bin/systemctl restart smebot.service || true
-  fi
-  echo 'Bot service failed after deployment; previous release restored when available.' >&2
-  exit 1
-fi
-rm -f "$archive"
-echo "Activated $revision"
+# The controller is installed root-owned independently of the candidate archive.
+exec /usr/bin/python3 /usr/local/lib/smebot/activation.py "$revision"

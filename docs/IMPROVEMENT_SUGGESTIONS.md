@@ -26,11 +26,10 @@ The following improvements remain open.
 | 6.1 | Conversation timeout and restart recovery | `main.py` has no configured conversation timeout or persistence. Saved orders/actions survive restarts, but unfinished registration, product entry and unconfirmed order drafts do not. Choose a deliberate resume or restart policy before adding persistence; preserve confirmation and consent requirements. |
 | 6.2 | Database connection reuse | Connections remain per operation. [Opening-time measurements and a local summarizer](DATABASE_CONNECTION_METRICS.md) were implemented on 18 October 2026; collect representative observations before deciding whether to introduce a bounded pool. Preserve transaction boundaries and per-user conversation safety. |
 | 6.5 | Abuse limits | There is a 5 MB photo limit, but no per-seller listing cap or application-level per-user write cooldown. Define limits that protect the database quota and storage allowance, including order/notification growth. |
-| Deployment readiness | Stronger activation gate | `deploy/activate_release.sh` waits 10 seconds and checks that systemd is active. Separate health jobs check Telegram, Oracle and backup freshness, but activation does not wait for those results. Design a bounded readiness gate that distinguishes candidate failures from external outages before changing automatic rollback. |
 
 ## Suggested sequence
 
-1. Define abuse limits and readiness acceptance criteria before wider use.
+1. Define abuse limits before wider use; roll out the implemented readiness gate in stages.
 2. Add listing management to the Telegram UI; the seller panel already provides it.
 3. Decide draft timeout/restart behavior; add connection reuse when measurements
    justify it.
@@ -38,9 +37,9 @@ The following improvements remain open.
 The measurement stage of finding 6.2 is implemented; see
 [Oracle connection measurements](DATABASE_CONNECTION_METRICS.md) for usage and
 validation. Connection and transaction behavior is preserved; pooling requires a
-later decision based on observations. The [deployment readiness plan](DEPLOYMENT_READINESS_PLAN.md)
-is deferred because it changes activation, rollback and privileged VM setup.
-**Five findings remain open**; planning and instrumentation alone do not complete
+later decision based on observations. The [deployment readiness guide](DEPLOYMENT_READINESS.md)
+documents the implemented gate, staged privileged VM setup and outstanding live checks.
+**Four findings remain open**; planning and instrumentation alone do not complete
 the connection-reuse finding.
 
 These are application findings. The infrastructure repository's earlier completed

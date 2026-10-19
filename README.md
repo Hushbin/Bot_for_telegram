@@ -168,19 +168,21 @@ Run the tests with `.venv/bin/python -m unittest discover -s tests -v`. They nee
 
 For ordering changes, use the maintenance, backup and staged enablement procedure in the [ordering guide](docs/ORDERING.md#enable-after-migration). Schema changes may not be compatible with the previous release; review rollback compatibility before migrating.
 
-The [deploy workflow](.github/workflows/deploy.yml) tests pull requests, then deploys each successful push to `master` (or a manual run on `master`). It builds wheels on Ubuntu 22.04/Python 3.10, opens a temporary session on the Terraform-managed `smebotdevdeploy` Bastion restricted to that runner's IP, copies a commit archive through an SSH tunnel, and activates a systemd release. CI never uploads `.env` or the database wallet. A failed service restart restores the previous release. Deployments are serialized. Each job deletes its session and restores the approved administrator `/32` allowlist; the Bastion remains provisioned.
+The [deploy workflow](.github/workflows/deploy.yml) tests pull requests, then deploys each successful push to `master` (or a manual run on `master`). It builds wheels on Ubuntu 22.04/Python 3.10, opens a temporary session on the Terraform-managed `smebotdevdeploy` Bastion restricted to that runner's IP, copies a commit archive through an SSH tunnel, and activates a systemd release. CI never uploads `.env` or the database wallet. The [readiness gate](docs/DEPLOYMENT_READINESS.md) checks the existing baseline, candidate process identity, dependencies and backup freshness before reporting activation; rollback distinguishes release failures from external outages. Deployments are serialized. Each job deletes its session and restores the approved administrator `/32` allowlist; the Bastion remains provisioned.
 
 One-time VM setup, from a trusted workstation that can SSH to the VM as `ubuntu`:
 
 1. Generate a separate deployment SSH key: `ssh-keygen -t ed25519 -N '' -f ~/.ssh/smebot-deploy -C smebot-deploy`. Keep its private half off Git.
-2. Copy `deploy/bootstrap_vm.sh`, `deploy/activate_release.sh`, all `deploy/smebot*.service` and `deploy/smebot*.timer` units, and `~/.ssh/smebot-deploy.pub` to one directory on the VM. Run `sudo bash bootstrap_vm.sh /path/to/smebot-deploy.pub` there. This installs Python venv support, creates separate service and deployment users, and installs the health and export timers. For example, from this repository:
+2. Copy `deploy/bootstrap_vm.sh`, `deploy/activate_release.sh`, `deploy/activation.py`, `deploy/probe_release.sh`, all `deploy/smebot*.service` and `deploy/smebot*.timer` units, and `~/.ssh/smebot-deploy.pub` to one directory on the VM. Run `sudo bash bootstrap_vm.sh /path/to/smebot-deploy.pub` there. This installs Python venv support, creates separate service and deployment users, and installs the health and export timers. For example, from this repository:
 
    ```sh
-   scp deploy/bootstrap_vm.sh deploy/activate_release.sh deploy/smebot*.service deploy/smebot*.timer ~/.ssh/smebot-deploy.pub ubuntu@<bot-public-ip>:/tmp/
+   scp deploy/bootstrap_vm.sh deploy/activate_release.sh deploy/activation.py deploy/probe_release.sh deploy/smebot*.service deploy/smebot*.timer ~/.ssh/smebot-deploy.pub ubuntu@<bot-public-ip>:/tmp/
    ssh ubuntu@<bot-public-ip> 'sudo bash /tmp/bootstrap_vm.sh /tmp/smebot-deploy.pub'
    ```
 3. Put `tnsnames.ora` and `ewallet.pem` in `/etc/smebot/wallet`, owned by `root:smebot` with mode `0640`. Install [bot.env.example](deploy/bot.env.example) as `/etc/smebot/bot.env`, also owned by `root:smebot` with mode `0640`, after filling in the three Vault secret OCIDs, the development compartment OCID, and bot instance OCID. The file contains no token or passwords in Vault mode.
 4. Apply the infrastructure repository's `environments/host/` Terraform stack. Its `smebot-dev-bot-runtime` dynamic group matches **only** the bot VM. Separate policies allow media operations on `smebot-dev-media` and reading only the three named runtime secret bundles. Allow several minutes for a new OCI policy to take effect. The bot uses its [instance principal](https://docs.oracle.com/en-us/iaas/Content/Identity/Tasks/callingservicesfrominstances.htm) for both services.
+
+Existing VMs must follow the [two-stage readiness rollout](docs/DEPLOYMENT_READINESS.md#install-on-an-existing-vm-in-two-stages): deploy and verify instrumentation with the old activator before installing enforcement. Repository changes alone do not update root-owned VM files.
 
 ### Versioned runtime settings
 

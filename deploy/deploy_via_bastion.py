@@ -35,6 +35,7 @@ def deploy(env, directory, session_id):
     options = ["-i", str(vm_key), "-o", "StrictHostKeyChecking=yes", "-o",
                "UserKnownHostsFile=" + str(known_hosts), "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
     tunnel = None
+    activated = False
     try:
         for attempt in range(30):
             tunnel = subprocess.Popen([
@@ -64,10 +65,17 @@ def deploy(env, directory, session_id):
                         "smebot-deploy@127.0.0.1:/opt/smebot/incoming/" + archive.name], check=True)
         command = shlex.join(["/usr/local/sbin/smebot-activate", env["GITHUB_SHA"], digest])
         subprocess.run(["ssh", *options, "-p", "2222", "smebot-deploy@127.0.0.1", command], check=True)
+        activated = True
     finally:
         if tunnel is not None:
-            tunnel.terminate()
-            tunnel.wait(timeout=15)
+            try:
+                tunnel.terminate()
+                tunnel.wait(timeout=15)
+            except Exception:
+                if activated:
+                    raise RuntimeError('Bastion tunnel cleanup failed after successful activation; '
+                                       'the healthy release remains selected') from None
+                print('Bastion tunnel cleanup also failed; deployment failure remains unresolved', file=sys.stderr)
 
 
 def run(env, *, client_factory=oci.bastion.BastionClient, transfer=deploy):
@@ -88,6 +96,7 @@ def run(env, *, client_factory=oci.bastion.BastionClient, transfer=deploy):
                            env["BOT_PRIVATE_IP"])
     with urllib.request.urlopen("https://checkip.amazonaws.com", timeout=15) as response:
         runner_ip = response.read(128).decode("ascii").strip()
+    activated = False
     try:
         with tempfile.TemporaryDirectory(prefix="smebot-deploy-") as directory:
             access.prepare(runner_ip)
@@ -95,8 +104,15 @@ def run(env, *, client_factory=oci.bastion.BastionClient, transfer=deploy):
             subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(key)], check=True)
             session_id = access.create(key.with_suffix(".pub").read_text().strip())
             transfer(env, directory, session_id)
+            activated = True
     finally:
-        access.cleanup()
+        try:
+            access.cleanup()
+        except Exception:
+            if activated:
+                raise RuntimeError('Bastion cleanup failed after successful activation; '
+                                   'the healthy release remains selected') from None
+            print('Bastion cleanup also failed; deployment failure remains unresolved', file=sys.stderr)
 
 
 def main():
