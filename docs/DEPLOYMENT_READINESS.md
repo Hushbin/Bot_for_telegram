@@ -194,6 +194,25 @@ archive/settings retention, redaction, helper argument/path restrictions,
 lifecycle gating, optional seller startup, read-only SQL/Telegram calls and the
 existing health metric contract.
 
+Follow-up harness investigation on **20 October 2026** found intermittent
+15-second outer-watchdog failures in the wrong-PID and missing-signal cases.
+Each fake one-second status poll started another Python interpreter; a complete
+100-second simulated candidate/rollback scenario took about 10.6 wall seconds
+even when it completed successfully, leaving limited headroom on slower workers.
+
+The harness now launches a real subprocess for every probe/restart and the first
+status read after each restart. Subsequent status reads recompute the same
+dynamic fixture in-process, including time-dependent invocation changes. The
+real controller, symlink/archive decisions, parsers and fake-clock deadlines
+remain exercised. Assertions additionally require the complete 90-second
+candidate deadline, 10-second rollback observation and exactly two restarts.
+The outer watchdog remains 15 seconds; deployment code and timeouts are unchanged.
+The five identity/deadline subcases passed together in 4.9 wall seconds; individual
+wrong-PID and missing-signal cases took about 1.2 and 0.9 seconds respectively.
+These are automated local fixtures, not new VM or production checks.
+The complete Python 3.12 offline suite then passed: **525 tests ran, 440 passed
+and 85 optional Oracle tests were skipped**, in 48.8 seconds.
+
 ## VM rollout and operational checks
 
 Completed on **19 October 2026**, after the local suite above passed. Application

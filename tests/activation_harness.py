@@ -11,12 +11,25 @@ root = Path(sys.argv[2] if sys.argv[1] == '--fake' else sys.argv[1])
 scenario = json.loads((root / 'scenario.json').read_text())
 
 
+def state_output(restart, now):
+    state = scenario.get('states', {}).get(str(restart), 'active')
+    invocation = f'{restart:032x}'
+    restarts = 0
+    if scenario.get('restart_loop') and restart == 1:
+        restarts = 1
+    if (scenario.get('invocation_change') and restart == 1 and
+            now >= float((root / 'restart_at').read_text()) + 5):
+        invocation = 'f' * 32
+    return f'ActiveState={state}\nMainPID={123 + restart}\nInvocationID={invocation}\nNRestarts={restarts}\n'
+
+
 class Harness(Controller):
     def __init__(self):
         self.tick = 1000.0
         self.counts = {}
         self.restarts = 0
         self.identity = None
+        self.sampled_states = set()
         super().__init__(root, root / 'run', clock=lambda: self.tick, wall=lambda: self.tick,
                          sleep=self.advance)
 
@@ -24,7 +37,10 @@ class Harness(Controller):
         self.tick += seconds
 
     def command(self, args, timeout):
-        # Commands are real child processes, with no access to live systemd/OCI.
+        # Probe/restart commands and the first state read per restart cross a real
+        # subprocess boundary. Later state polls use the same dynamic simulator
+        # in-process: advancing fake time must not spawn ~100 Python interpreters
+        # and exhaust the outer real-time watchdog on a slower test worker.
         if timeout <= 0 or self.tick >= self.end:
             from activation import GateFailure
             raise GateFailure('attempt_deadline')
@@ -37,8 +53,14 @@ class Harness(Controller):
             command = ['restart', str(self.restarts)]
         else:
             command = ['state', str(self.restarts)]
-        result = subprocess.run([sys.executable, str(Path(__file__).resolve()), '--fake',
-                                 str(root), str(self.tick), *command], capture_output=True, timeout=3)
+        if command[0] == 'state' and self.restarts in self.sampled_states:
+            result = subprocess.CompletedProcess(command, 0,
+                                                 state_output(self.restarts, self.tick).encode(), b'')
+        else:
+            result = subprocess.run([sys.executable, str(Path(__file__).resolve()), '--fake',
+                                     str(root), str(self.tick), *command], capture_output=True, timeout=3)
+            if command[0] == 'state':
+                self.sampled_states.add(self.restarts)
         if command[0] == 'probe':
             if (scenario.get('hang_probe') or self.counts[sha] in
                     scenario.get('hang_probe_at', {}).get(sha, [])):
@@ -85,16 +107,7 @@ def fake():
         sys.exit(0 if all(i['status'] == 'pass' for i in checks.values()) else 1)
     if action == 'restart':
         sys.exit(1 if int(sys.argv[5]) in scenario.get('restart_failure', []) else 0)
-    restart = int(sys.argv[5])
-    state = scenario.get('states', {}).get(str(restart), 'active')
-    invocation = f'{restart:032x}'
-    restarts = 0
-    if scenario.get('restart_loop') and restart == 1:
-        restarts = 1
-    if (scenario.get('invocation_change') and restart == 1 and
-            now >= float((root / 'restart_at').read_text()) + 5):
-        invocation = 'f' * 32
-    print(f'ActiveState={state}\nMainPID={123 + restart}\nInvocationID={invocation}\nNRestarts={restarts}')
+    print(state_output(int(sys.argv[5]), now), end='')
 
 
 if __name__ == '__main__':

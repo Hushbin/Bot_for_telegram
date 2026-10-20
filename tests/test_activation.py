@@ -103,6 +103,10 @@ class ActivationTests(unittest.TestCase):
                 outcome = self.run_case({'signals': {NEW: signal}})
                 self.assertEqual(outcome[:3], (1, OLD, True))
                 self.assertIn('readiness_deadline', outcome[3])
+                # The candidate must exhaust its 90-second gate and the restored
+                # process must satisfy the 10-second stable observation period.
+                self.assertEqual(outcome[4]['tick'] - 1000, 100)
+                self.assertEqual(outcome[4]['restarts'], 2)
 
     def test_process_exit_restart_and_invocation_change_restore(self):
         for scenario in ({'states': {'1': 'failed'}}, {'restart_loop': True}, {'invocation_change': True},
