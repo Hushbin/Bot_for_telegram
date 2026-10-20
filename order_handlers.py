@@ -36,6 +36,7 @@ class OrderHandlers:
         self.store = handlers.store
         self.run = handlers.run
         self.enabled = enabled
+        self.lifecycle = None
 
     async def failure(self, update, error):
         LOG.error('Order operation failed: category=%s', type(error).__name__)
@@ -141,6 +142,8 @@ class OrderHandlers:
             if old:
                 await self._show(update, old)
                 return None
+            if self.lifecycle and await self.lifecycle.reject_expired(update, answer=False):
+                return ConversationHandler.END
             draft = context.user_data.get('order_draft')
             if not draft or draft['key'] != key or query.message.message_id != draft['message_id']:
                 await query.message.reply_text('This summary has expired. Use /order for a fresh review.')

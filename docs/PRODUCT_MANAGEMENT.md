@@ -70,10 +70,13 @@ Code rollback also cannot undo an edit or removal. The previous format-3 release
 can read this release's data, but rolling back restores its older removal rules
 and loses the new Telegram management UI.
 
-Management drafts remain in memory. Restarting expires them; use
+Management drafts remain in memory and expire after 30 minutes of inactivity in
+the flow. Restarting discards them; use
 `/manageproduct` again. Buttons bind the actor, nonce and bot message; stale,
 forwarded or malformed callbacks cannot mutate products or discard another
-active draft. Finding 6.1 (general conversation recovery/timeouts) remains open.
+active draft. Expired Save/removal buttons and pending photo input cannot change
+saved products. Already admitted uploads and their compensation finish normally.
+See [conversation lifecycle](CONVERSATION_LIFECYCLE.md) for cleanup and restart behavior.
 
 ## Validation
 

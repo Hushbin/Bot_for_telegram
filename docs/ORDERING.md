@@ -20,8 +20,12 @@ an alert containing the buyer's explicitly confirmed name and phone, plus
 The bot retries temporary notification failures and records permanent failures
 in order details. Histories remain authoritative. A crash after Telegram accepts
 an alert can cause a duplicate message with the same order ID, but never a second
-order or stock deduction. Saved order actions survive restarts; unconfirmed drafts
-need fresh review. Self-orders are rejected.
+order or stock deduction. Saved order actions survive restarts and conversation
+expiry. Replaying an old confirmation displays the saved order without creating
+another one. Unconfirmed drafts expire after 30 minutes of inactivity in the
+flow or a bot restart and need fresh review and consent. Browsing and saved-order
+actions do not extend draft deadlines. Self-orders are rejected.
+See [conversation lifecycle](CONVERSATION_LIFECYCLE.md).
 
 ## Enable after migration
 

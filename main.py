@@ -9,10 +9,12 @@ from telegram.ext import (
     CommandHandler,
     ConversationHandler,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
 from config import load_settings
+from conversation_lifecycle import ConversationLifecycle
 from order_handlers import ORDER_ID, ORDER_QUANTITY, ORDER_CONFIRM
 from product_management import PM_ID, PM_MENU, PM_INPUT, PM_REVIEW, PM_REMOVE, PM_PHOTO
 from order_worker import OrderWorker
@@ -121,6 +123,8 @@ def build_application(settings=None, store=None, media=None):
     store.check()
     handlers = BotHandlers(store, media, erasures, getattr(settings, "orders_enabled", False))
     orders = handlers.order_handlers
+    lifecycle = ConversationLifecycle()
+    orders.lifecycle = lifecycle
     worker_holder = {}
     panel = None
     if getattr(settings, 'seller_panel_url', ''):
@@ -148,7 +152,9 @@ def build_application(settings=None, store=None, media=None):
         worker = OrderWorker(store, application.bot)
         worker_holder["worker"] = worker
         worker.start()
+        lifecycle.start()
         guards = [lambda: worker.task is not None and not worker.task.done(),
+                  lambda: lifecycle.task is not None and not lifecycle.task.done(),
                   lambda: application.running and application.updater.running]
         if panel:
             guards.append(lambda: panel.task is not None and not panel.task.done())
@@ -156,6 +162,7 @@ def build_application(settings=None, store=None, media=None):
 
     async def stop_runtime(application):
         readiness.stop()
+        await lifecycle.stop()
         if panel:
             await panel.stop()
         worker = worker_holder.get("worker")
@@ -165,6 +172,8 @@ def build_application(settings=None, store=None, media=None):
     application = (ApplicationBuilder().bot(ReadinessBot(settings.bot_token, readiness))
                    .concurrent_updates(False).post_init(start_runtime)
                    .post_stop(stop_runtime).post_shutdown(stop_runtime).build())
+    application.bot_data['conversation_lifecycle'] = lifecycle
+    application.add_handler(TypeHandler(Update, lifecycle.observe), group=-2)
     application.add_handler(CallbackQueryHandler(
         orders.durable_action, pattern=r"^(ord|hist):"), group=-1)
     application.add_handler(CallbackQueryHandler(
@@ -277,6 +286,7 @@ def build_application(settings=None, store=None, media=None):
         fallbacks=[CommandHandler("cancel", handlers.cancel, filters=PRIVATE_COMMAND)],
         allow_reentry=True,
     )
+    lifecycle.guard_conversation(conversation, orders.confirm)
     application.add_handler(conversation)
     for name, callback in (
         ("orders", orders.purchases),
@@ -288,9 +298,14 @@ def build_application(settings=None, store=None, media=None):
     ):
         application.add_handler(CommandHandler(name, callback, filters=PRIVATE_COMMAND))
     # Corrections to a message whose flow has already finished, e.g. the business details.
-    application.add_handler(MessageHandler(PRIVATE_EDITED_TEXT, handlers.edited))
-    application.add_handler(CommandHandler("cancel", handlers.cancel, filters=PRIVATE_COMMAND))
-    application.add_handler(CommandHandler("skip", handlers.skip, filters=PRIVATE_COMMAND))
+    application.add_handler(MessageHandler(
+        PRIVATE_EDITED_TEXT, lifecycle.wrap(handlers.edited, conversation=False)))
+    application.add_handler(CommandHandler(
+        "cancel", lifecycle.wrap(handlers.cancel, entry=True, fresh=True, conversation=False),
+        filters=PRIVATE_COMMAND))
+    application.add_handler(CommandHandler(
+        "skip", lifecycle.wrap(handlers.skip, entry=True, conversation=False),
+        filters=PRIVATE_COMMAND))
     # Commands sent in a group are answered once, with a pointer to the private chat.
     application.add_handler(CommandHandler(
         BOT_COMMANDS, handlers.not_private,
@@ -298,6 +313,7 @@ def build_application(settings=None, store=None, media=None):
     ))
     # Buttons that no active conversation owns, e.g. from before a restart.
     application.add_handler(CallbackQueryHandler(handlers.expired_button))
+    application.add_handler(MessageHandler(PRIVATE_NON_COMMAND, lifecycle.unhandled_input))
     application.add_error_handler(on_error)
     return application
 

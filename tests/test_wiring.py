@@ -620,14 +620,14 @@ class ConversationIsolationTests(WiringTestCase):
         await self.say(21, "/profile")
         await self.say(21, "/addproduct")
         self.assertEqual(await self.say(21, "/cancel"), ["Cancelled."])
-        self.assertEqual(await self.say(21, PRODUCT), [])
+        self.assertIn('/menu', (await self.say(21, PRODUCT))[0])
         self.assertEqual(self.store.list_products(seller_id=21), [])
 
     async def test_abandoned_flow_does_not_capture_later_text(self):
         self.seed_seller(22)
         await self.say(22, "/addproduct")
         self.assertIn("Welcome back", (await self.say(22, "/start"))[0])
-        self.assertEqual(await self.say(22, "hello"), [])
+        self.assertIn('/menu', (await self.say(22, "hello"))[0])
         self.assertEqual(self.store.list_products(seller_id=22), [])
 
 

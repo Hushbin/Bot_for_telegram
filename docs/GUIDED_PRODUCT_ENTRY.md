@@ -42,14 +42,18 @@ behavior, including correction of the saved row without creating another listing
 
 ## Navigation, failures and restarts
 
-Drafts live only in memory. A bot restart loses unfinished entry; old buttons
+Drafts live only in memory and expire after 30 minutes of inactivity in the flow.
+A bot restart loses unfinished entry; old buttons
 direct the seller to `/addproduct`. `/cancel` and new entry commands clear the
 draft. Category and review buttons are bound to the current user's draft, a
 random revision token and the expected prompt message. Stale, repeated, malformed,
 cross-user and group-chat callbacks do not save or change a draft.
 
 Catalog commands and pagination can be used during entry without clearing the
-draft. A new order conversation replaces it; expired entry buttons leave an
+draft or extending its deadline. Compact latest-message corrections also expire
+after 30 minutes of inactivity, including after saving and skipping a photo.
+Expiry never removes a saved listing. See [conversation lifecycle](CONVERSATION_LIFECYCLE.md).
+A new order conversation replaces it; expired entry buttons leave an
 active order conversation alone.
 
 Successful IDs are recorded and the draft is invalidated before sending the

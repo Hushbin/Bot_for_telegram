@@ -18,6 +18,7 @@ from catalog import (
     CATEGORIES, DEFAULT_CURRENCY, MINOR_UNITS_PER_MAJOR, MAX_PRODUCT_ID, category_label,
 )
 from abuse_limits import LimitError, summary_text as abuse_summary_text
+from conversation_lifecycle import clear_flow
 from photo_delivery import ProductPhotoDelivery
 from product_media import save_product_photo
 from product_management import ProductManagementMixin, PM_PHOTO, management_button
@@ -50,6 +51,8 @@ PRIVACY_NOTICE = (
     "visible only to the participating buyer and seller. Seller contact details "
     "are not automatically shared.\n\n"
     "How long: live profiles and order contact snapshots stay until you erase them. "
+    "Unfinished steps and latest-message corrections expire after 30 minutes of "
+    "inactivity in that step and are discarded when the bot restarts. "
     "Daily recovery exports are kept for seven days (OCI deletion may take another day); "
     "managed database backups can last up to 60 days.\n\n"
     "Your controls: /mydata shows stored data; /orders and /sales show order details. "
@@ -330,11 +333,7 @@ class BotHandlers(ProductManagementMixin):
     @staticmethod
     def reset_flow(context):
         """Forget the half-finished input of whatever flow the user was in."""
-        for key in ("last_input", "draft", "pending_product_id",
-                    "pending_product_number", "signup_role",
-                    "phone_keyboard_active", "order_after_signup", "order_product_id", "order_draft",
-                    "product_draft", "product_management", "pending_photo_revision"):
-            context.user_data.pop(key, None)
+        clear_flow(context.user_data)
 
     @staticmethod
     async def hide_phone_keyboard(update, context):

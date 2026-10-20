@@ -45,10 +45,10 @@ What the bot stores, who sees it, and for how long. New users see the privacy no
 - **Phone number.** Users either share the number Telegram has verified (a persistent contact-share keyboard; the bot accepts only the user's own contact) or type any number, which is stored as unverified. If the typing keyboard covers the button, tap the keyboard icon beside the message field.
 - **Seller listing.** A registered business is not required. Enter a listing name and a city/area, or `Online`, as `name | location`. The account email and phone are copied into seller contact fields unless the seller adds `| email | phone`. The listing name and products are public; the location and contact details are visible only to the operator. Sellers who use their personal name as the listing name make that name public. Existing `name, email, address, phone` input is still accepted.
 - **Orders.** Confirmation saves the displayed name, phone, price and consent version/time. Erasure cancels open orders and scrubs that party’s snapshots; redacted transaction history remains for inventory consistency. Already delivered Telegram messages cannot reliably be recalled.
-- **Retention.** Data is kept until the user erases it with `/deleteme`; there is no automatic expiry. Users can see what is stored with `/mydata`.
+- **Retention.** Saved profiles, listings and order contacts are kept until the user erases them with `/deleteme`. Unfinished steps and latest-message correction context expire after 30 minutes of inactivity in that flow and are discarded on bot restart. Users can see saved data with `/mydata`.
 - **Erasure.** `/deleteme` asks for confirmation, then overwrites the user's name, email and phone, their seller profile and their products with `[deleted]`, hides the products, and deletes the photo objects. Rows are overwritten rather than deleted so the runtime database account needs no `DELETE` privilege. The numeric Telegram ID and the erasure time remain. A user who registers again starts from an empty profile.
 - **Photos.** Deleting a photo needs its version ID because the bucket is versioned; the ID is stored with the product. A photo stored without one (none are created by this version) only gets a delete marker and needs manual cleanup. If a photo cannot be deleted, the data is still erased, the user is told, and the object key is logged at ERROR.
-- **Corrections.** Editing the latest message while entering account details or a compact product line corrects that input; the bot updates the saved record rather than adding a duplicate. Guided product fields can be corrected before Save; a category selection or subsequent field makes earlier messages ineligible. Editing the description refreshes the review and expires its old Save button. After guided Save, use the seller panel for changes. Older edits and edits after a new entry command are ignored.
+- **Corrections.** Editing the latest message while entering account details or a compact product line corrects that input; the bot updates the saved record rather than adding a duplicate. Corrections remain available for 30 minutes of inactivity, including after saving. Guided product fields can be corrected before Save; a category selection or subsequent field makes earlier messages ineligible. Editing the description refreshes the review and expires its old Save button. After guided Save, use `/manageproduct` or the seller panel for changes. Older edits and edits after a new entry command or bot restart are ignored.
 
 ## Local setup
 
@@ -136,8 +136,12 @@ Registration takes the name and email as `Jane Doe, jane@example.com` (the name 
 and Cancel buttons. The guided listing is created only on Save. As a shortcut,
 send `name | category | price | stock | description` at the first prompt; this
 format saves immediately. Cancelling after a save leaves the listing available.
-Unfinished drafts are lost on restart. See [guided product entry](docs/GUIDED_PRODUCT_ENTRY.md)
-for corrections, validation and save-failure behavior.
+Unfinished drafts expire after 30 minutes of inactivity in that flow and are lost
+on restart. Cleanup is silent; the next interaction explains expiry and removes
+any pending phone keyboard. Send `/menu` to start again. Catalog browsing and
+saved-order actions remain available and do not extend a draft's deadline.
+See [conversation lifecycle](docs/CONVERSATION_LIFECYCLE.md) and
+[guided product entry](docs/GUIDED_PRODUCT_ENTRY.md) for details.
 
 A photo must be at most 5 MB. The bot uploads it to a unique private object key and stores the key on the product row. If the database update fails after upload, the bot deletes that exact object version. Photos are never given public Object Storage URLs; `/product` reads the object through the bot's OCI identity and sends it to Telegram.
 

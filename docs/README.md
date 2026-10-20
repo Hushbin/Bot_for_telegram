@@ -8,6 +8,7 @@ Setup, configuration, commands, privacy and VM deployment are documented in the
 | [Durable account limits](ABUSE_LIMITS.md) | Listing, order and upload admission, recovery compatibility and staged rollout |
 | [Ordering](ORDERING.md) | Buyer/seller flows, feature flag, Oracle migration, staged rollout, privacy and recovery |
 | [Ordering validation](ORDERING_VALIDATION.md) | Dated automated checks and Oracle migration evidence; manual UI test limitations |
+| [Conversation lifecycle](CONVERSATION_LIFECYCLE.md) | Inactivity deadlines, silent draft cleanup, correction windows and restart policy |
 | [Photo delivery](PHOTO_DELIVERY.md) | Persistent Telegram photo references, timeouts, migration and verification |
 | [Improvement suggestions](IMPROVEMENT_SUGGESTIONS.md) | Remaining application and deployment improvements checked against current source |
 | [Catalog browsing](CATALOG_PAGINATION.md) | Product pagination, navigation behavior and validation |
