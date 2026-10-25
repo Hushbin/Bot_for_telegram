@@ -17,6 +17,7 @@ Setup, configuration, commands, privacy and VM deployment are documented in the
 | [Guided product entry](GUIDED_PRODUCT_ENTRY.md) | Listing wizard, compact shortcut, corrections, save failures and validation |
 | [Product management](PRODUCT_MANAGEMENT.md) | Telegram field editing, photo replacement, confirmed removal, order guards and cleanup |
 | [Oracle connection measurements](DATABASE_CONNECTION_METRICS.md) | Safe opening-time logs, local summary commands, interpretation and validation |
+| [Default branch migration](DEFAULT_BRANCH_MIGRATION.md) | Step-by-step future master-to-main migration, deployment checks and rollback |
 | [Deployment readiness](DEPLOYMENT_READINESS.md) | Process/dependency checks, outage classification, bounded rollback, staged installation and validation |
 
 Infrastructure resources, backup operations and secret rotation are documented in
