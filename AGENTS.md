@@ -38,7 +38,7 @@ Use `unittest`; name files `test_*.py` and methods `test_*`. Add focused tests f
 
 ## Commit & Pull Request Guidelines
 
-History uses concise imperative subjects (`Move bot catalog and media to OCI`) and prefixes such as `feat:` or `chore:`. Keep commits focused. Pull requests should explain behavior changes, link relevant issues, list test results, and include a bot chat example for user-facing changes. Call out schema changes: run `scripts/setup_db.py` before deploying a release that adds columns. Successful pushes to `master` trigger deployment through `.github/workflows/deploy.yml`.
+History uses concise imperative subjects (`Move bot catalog and media to OCI`) and prefixes such as `feat:` or `chore:`. Keep commits focused. Pull requests should explain behavior changes, link relevant issues, list test results, and include a bot chat example for user-facing changes. Call out schema changes: run `scripts/setup_db.py` before deploying a release that adds columns. Successful pushes to `master` with changes beyond Markdown documentation trigger deployment through `.github/workflows/deploy.yml`.
 
 ## Security & Configuration
 

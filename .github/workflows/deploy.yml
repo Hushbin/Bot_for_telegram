@@ -2,8 +2,12 @@ name: Test and deploy bot
 
 on:
   pull_request:
+    paths-ignore:
+      - '**/*.md'
   push:
     branches: [master]
+    paths-ignore:
+      - '**/*.md'
   workflow_dispatch:
 
 permissions:
