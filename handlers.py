@@ -45,6 +45,8 @@ PRIVACY_NOTICE = (
     "- abuse prevention: live UTC-day listing/order counts, photo attempts and last-action "
     "times linked to your Telegram ID; retained through erasure until midnight UTC. "
     "Expired counters are cleared automatically; recovery may pause new activity until midnight.\n\n"
+    "Short-term request balances and feedback times are linked to your Telegram ID "
+    "in memory only; idle entries are discarded on later traffic, and all reset on restart.\n\n"
     "Who can see it: the bot operator sees stored data. Product listings are public. "
     "When you confirm an order, your name and phone are shared with that seller, "
     "as shown on the confirmation screen. Email is not shared. Order details are "
