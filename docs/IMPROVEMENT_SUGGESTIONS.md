@@ -25,8 +25,9 @@ remain available. See [conversation lifecycle](CONVERSATION_LIFECYCLE.md).
 The Telegram general-request portion of suggestion 6.5 was implemented on
 **29 October 2026**: bounded per-user throttling runs before conversation and
 database/media work, with a separate cancellation/privacy reserve. See
-[request throttling](ABUSE_LIMITS.md#telegram-request-throttling). This is locally
-validated implementation, not a production rollout or a distributed-abuse solution.
+[request throttling](ABUSE_LIMITS.md#telegram-request-throttling). Python 3.10 CI
+and deployment passed on the same date; the [release record](ABUSE_LIMITS.md#telegram-release-verification-29-october-2026)
+links the runs and activation evidence. Distributed-abuse protection remains open.
 
 The previous review mixed completed defects with open work and described the
 pre-ordering application. Completed logging, conversation wiring, input handling,

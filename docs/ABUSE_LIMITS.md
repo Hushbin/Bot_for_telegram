@@ -189,13 +189,39 @@ Automated Telegram request-throttling validation on **29 October 2026**:
   failures, bounded storage/expiry, no database/photo work on rejection, unchanged
   drafts/deadlines/durable counters, expiry and idempotent order-confirmation retry.
 - Changed Python files passed Python 3.10 syntax parsing; release/example settings,
-  shell syntax and `git diff --check` passed. Python 3.10 runtime behavior remains
-  covered by the existing CI job when the change is submitted.
+  shell syntax and `git diff --check` passed. Python 3.10 CI results follow below.
 
-These are local automated results. No production deployment, OCI verification,
-real Telegram messages, live traffic measurements or new GitHub CI run were
-performed for this implementation. The versioned release flag has been prepared;
-live enforcement is not asserted.
+These local checks used synthetic updates and did not contact Oracle or send
+real Telegram messages. They are separate from the subsequent deployment below.
+
+### Telegram release verification, 29 October 2026
+
+[PR #6](https://github.com/Hushbin/Bot_for_telegram/pull/6) published implementation
+commit `13bf67991703c7261672ecba35fcd90bba50086a` and merged it as
+`829f0a7d25f4d88694f99d51ebd52a462311c4a2` on `master`.
+
+- [Pull-request CI](https://github.com/Hushbin/Bot_for_telegram/actions/runs/40954350408)
+  passed on Python 3.10.22 before merge; its deployment job was skipped as intended.
+- [Release CI and deployment](https://github.com/Hushbin/Bot_for_telegram/actions/runs/40954661718)
+  passed both test and deploy jobs for the merged SHA. Each CI test job ran
+  **581 tests, with 496 passed and 85 optional Oracle tests skipped**.
+- The previous release `b025719b98a190107cd051880fd7a4e1e49075d7` passed all five
+  baseline probes before switching. The candidate passed configuration, Telegram,
+  database, backup and seller-API probes and the process readiness gate.
+  At **21:11:11 UTC**, the logs reported `candidate: ready` and
+  `Activated 829f0a7d25f4d88694f99d51ebd52a462311c4a2`. No rollback was required.
+- The Bastion transfer/activation step completed successfully, including its
+  checked session deletion and restoration of the approved idle allowlist.
+  The overall workflow completed successfully at **21:11:36 UTC**.
+- The activated release contains `TELEGRAM_RATE_LIMIT_ENABLED=true`, burst `10`
+  and refill `1` in its versioned runtime settings. Its Git tree matches the
+  locally reviewed implementation. No schema or root-owned VM helper change
+  was required.
+
+This verification uses GitHub workflow and VM activation/probe logs. No separate
+SSH process-environment inspection, live throttle/flood test, traffic-baseline
+measurement or buyer/seller acceptance journey was performed. This Markdown-only
+record does not deploy another release.
 
 Automated chat/API
 checks simulate user traffic; a real buyer/seller Telegram acceptance journey is a
