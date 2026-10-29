@@ -7,7 +7,7 @@ Setup, configuration, commands, privacy and VM deployment are documented in the
 | --- | --- |
 | [Product roadmap](PRODUCT_ROADMAP.md) | Marketplace and seller-panel assessment, feature opportunities, cross-repository delivery and outcome metrics |
 | [Product agents and skills](PRODUCT_AGENT_WORKFLOW.md) | Recommended BA, engineering and review roles, custom skills and feature-brief template |
-| [Durable account limits](ABUSE_LIMITS.md) | Listing, order and upload admission, recovery compatibility and staged rollout |
+| [Account and request limits](ABUSE_LIMITS.md) | Durable listing/order/upload admission, Telegram throttling, recovery compatibility and rollout |
 | [Ordering](ORDERING.md) | Buyer/seller flows, feature flag, Oracle migration, staged rollout, privacy and recovery |
 | [Ordering validation](ORDERING_VALIDATION.md) | Dated automated checks and Oracle migration evidence; manual UI test limitations |
 | [Conversation lifecycle](CONVERSATION_LIFECYCLE.md) | Inactivity deadlines, silent draft cleanup, correction windows and restart policy |

@@ -15,6 +15,7 @@ from telegram.ext import (
 
 from config import load_settings
 from conversation_lifecycle import ConversationLifecycle
+from telegram_rate_limit import RequestLimiter, TelegramRateLimit, TelegramRequestGate
 from order_handlers import ORDER_ID, ORDER_QUANTITY, ORDER_CONFIRM
 from product_management import PM_ID, PM_MENU, PM_INPUT, PM_REVIEW, PM_REMOVE, PM_PHOTO
 from order_worker import OrderWorker
@@ -173,6 +174,10 @@ def build_application(settings=None, store=None, media=None):
                    .concurrent_updates(False).post_init(start_runtime)
                    .post_stop(stop_runtime).post_shutdown(stop_runtime).build())
     application.bot_data['conversation_lifecycle'] = lifecycle
+    request_limiter = RequestLimiter(getattr(settings, 'telegram_rate_limit', TelegramRateLimit()))
+    application.bot_data['telegram_request_limiter'] = request_limiter
+    application.add_handler(TypeHandler(
+        Update, TelegramRequestGate(request_limiter, BOT_COMMANDS).check), group=-3)
     application.add_handler(TypeHandler(Update, lifecycle.observe), group=-2)
     application.add_handler(CallbackQueryHandler(
         orders.durable_action, pattern=r"^(ord|hist):"), group=-1)

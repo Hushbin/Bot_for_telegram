@@ -1,9 +1,78 @@
-# Durable account limits
+# Account and request limits
 
 Finding 6.5 phase 1 adds admission controls for new listings, new orders and photo
 uploads across Telegram and the seller web panel. This protects growth per account;
-it does not bound total database/storage use or prevent account farming. Registration,
-reads, general edits, global capacity alerts and retention remain follow-up work.
+it does not bound total database/storage use or prevent account farming. The
+[Telegram request gate](#telegram-request-throttling) also throttles registration,
+reads and edits before handler work. Global capacity alerts, historical-data
+retention and distributed registration/account-farming controls remain follow-up work.
+
+## Telegram request throttling
+
+The dispatcher admits at most ten immediate updates per Telegram user, refilling
+one request per second. It covers private messages (including contacts/photos),
+edits and button callbacks, plus non-private callbacks and recognized bot commands.
+Unrelated group messages and commands addressed to another bot in a group are
+ignored. All covered traffic for an account shares a budget across chats.
+
+| Setting | Code/local default | Behavior |
+| --- | --- | --- |
+| `TELEGRAM_RATE_LIMIT_ENABLED` | `false` | Enable process-local request admission independently of `ABUSE_LIMITS_ENABLED` |
+| `TELEGRAM_RATE_LIMIT_BURST` | `10` | Initial and maximum normal tokens per user |
+| `TELEGRAM_RATE_LIMIT_REFILL_PER_SECOND` | `1` | Normal tokens restored per second |
+
+Enabled must be `true` or `false` (case-insensitive); numeric values must be
+integers from 1 to 1,000, even when disabled. Invalid settings fail startup.
+The versioned `deploy/runtime.env` enables the 10/1 policy for the next deployed
+release; local examples leave it disabled. This file takes precedence over the
+VM's instance configuration under systemd.
+
+When the normal budget is empty, private `/cancel`, `/privacy`, `/mydata`,
+`/deleteme` and the exact erasure-confirmation buttons use a separate reserve:
+three requests, replenishing one every ten seconds. Correct command mentions
+(such as `/privacy@YourBot`) work; edited commands and other buttons cannot use
+the reserve. Normal tokens are always used first. Authentication, ownership,
+confirmation and order version checks still belong to the existing handlers.
+Cancelling an order through an order button uses the normal budget.
+
+Rejected updates are discarded, not queued or automatically retried. The gate
+runs before conversation expiry observation and order callbacks; it performs no
+database/media work and does not alter drafts, renew their deadlines, consume
+durable write budgets or apply edits. The existing background cleanup can still
+expire an inactive draft normally. An admitted request costs a token even if
+validation or the handler later fails.
+
+Private messages receive `Too many requests. Try again in N seconds.` at most
+once per user every ten seconds. Button rejections are acknowledged exactly once,
+with retry text subject to that same feedback interval and otherwise silently.
+Non-private messages are rejected silently. A feedback failure does not admit
+the request or trigger a second generic error message. Once the budget refills,
+retry the action manually; existing order confirmation keys preserve idempotency.
+
+Only Telegram IDs, request balances and monotonic refill/feedback times are
+retained in memory. The limiter tracks at most 10,000 users. Idle entries are
+removed lazily on covered traffic after `max(60, burst/refill_rate, 30)` seconds;
+expiry never grants tokens faster than normal refill. Rejected attempts also
+count as activity. At capacity, untracked users are temporarily rejected without
+evicting active users or sending messages; callbacks still receive a silent
+acknowledgement. The privacy reserve is unavailable to untracked users at capacity.
+The cap covers the limiter's own map, not framework state or total process memory.
+Restart clears these transient balances; erasure does not grant a fresh budget.
+Nothing is added to database exports or retained request history.
+
+During covered traffic, the `telegram_rate_limit` logger emits at most one
+`TELEGRAM_RATE_LIMIT` JSON event per minute with protocol `v=1` and aggregate
+`accepted`, `rejected`, `reserve_used`, `capacity_rejected` counts since its
+previous report (or startup). The traffic triggering a report is included in it.
+No report is sent during inactivity, so an unreported final partial window is
+lost on restart. Logs contain no IDs, message contents, callback data or tokens;
+logging failure cannot change admission. These are local logs, not OCI metrics.
+
+After a requested release through the normal deployment/readiness workflow,
+review these counts for unexpected rejection levels. To disable, ship a release
+with `TELEGRAM_RATE_LIMIT_ENABLED=false`; durable admission remains independent.
+No schema migration, new dependency or second poller is required. This is per-user
+protection, not a global traffic limit or a defense against distributed accounts.
 
 ## Policy and configuration
 
@@ -108,6 +177,25 @@ Do not remove the ledger table or reset counters when disabling enforcement.
    readiness checks. Do not create production fixture orders or inject live faults.
 
 ## Validation
+
+Automated Telegram request-throttling validation on **29 October 2026**:
+
+- Python 3.12 offline suite: **581 tests ran, 496 passed and 85 optional Oracle
+  tests skipped**, using `.venv/bin/python -m unittest discover -s tests -v`.
+- All 27 new policy, limiter and dispatcher tests passed with fake clocks,
+  simulated Telegram transport and temporary SQLite/media stores. Coverage includes
+  exact refill boundaries (including frequent fractional-second activity), user
+  isolation, reserve eligibility/refill, command mentions, feedback suppression and
+  failures, bounded storage/expiry, no database/photo work on rejection, unchanged
+  drafts/deadlines/durable counters, expiry and idempotent order-confirmation retry.
+- Changed Python files passed Python 3.10 syntax parsing; release/example settings,
+  shell syntax and `git diff --check` passed. Python 3.10 runtime behavior remains
+  covered by the existing CI job when the change is submitted.
+
+These are local automated results. No production deployment, OCI verification,
+real Telegram messages, live traffic measurements or new GitHub CI run were
+performed for this implementation. The versioned release flag has been prepared;
+live enforcement is not asserted.
 
 Automated chat/API
 checks simulate user traffic; a real buyer/seller Telegram acceptance journey is a
