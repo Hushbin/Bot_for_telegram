@@ -292,7 +292,7 @@ class SellerRuntime:
         self.server = self.task = None
 
     async def panel(self, update, context):
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions
         from telegram.ext import ConversationHandler
         uid = update.effective_user.id
         seller = await asyncio.to_thread(self.store.get_seller, uid)
@@ -301,11 +301,21 @@ class SellerRuntime:
             await update.effective_message.reply_text('Register with /start and create a /sellerprofile first, then send /panel.')
         else:
             token = self.sessions.issue(uid)
+            login_url = f'{self.origin}/#login={token}'
+            if urlsplit(self.origin).hostname in ('localhost', '127.0.0.1', '::1'):
+                # Telegram rejects localhost URLs in inline keyboard buttons.
+                await update.effective_message.reply_text(
+                    'Copy this private sign-in link into the browser on the computer '
+                    'running the test panel. It works once and expires in 5 minutes. '
+                    'Do not forward it. Signing in lasts up to 8 hours.\n\n'
+                    + login_url,
+                    parse_mode=None, link_preview_options=LinkPreviewOptions(is_disabled=True))
+                return ConversationHandler.END
             await update.effective_message.reply_text(
                 'Open your seller panel. This private sign-in link works once and expires in 5 minutes. '
                 'Do not forward it. Signing in lasts up to 8 hours.',
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(
-                    'Open seller panel', url=f'{self.origin}/#login={token}')]]))
+                    'Open seller panel', url=login_url)]]))
         return ConversationHandler.END
 
     async def start(self, application):

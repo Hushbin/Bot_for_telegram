@@ -4,12 +4,13 @@ import io
 from pathlib import Path
 import unittest
 from uuid import uuid4
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
+from types import SimpleNamespace
 import httpx
 from PIL import Image
 from local_backend import SQLiteStore, LocalMediaStorage
 from product_photos import prepare_photo, MAX_PHOTO_BYTES
-from seller_api import COOKIE, SellerSessions, create_api
+from seller_api import COOKIE, SellerRuntime, SellerSessions, create_api
 
 
 def image_bytes(format='PNG', size=(32, 24), **options):
@@ -36,6 +37,35 @@ class SessionTests(unittest.TestCase):
         session = sessions.exchange(sessions.issue(1))
         now[0] += 28801
         self.assertIsNone(sessions.user(session))
+
+
+class PanelLinkTests(unittest.IsolatedAsyncioTestCase):
+    async def test_local_link_is_copyable_and_one_use_without_inline_button(self):
+        for origin in ('https://localhost:8443', 'https://127.0.0.1:8443', 'https://[::1]:8443'):
+            with self.subTest(origin=origin):
+                runtime = SellerRuntime(Mock(get_seller=Mock(return_value={'id': 1}),
+                                             get_user=Mock(return_value={'id': 1})), origin, 8081, True)
+                reply = AsyncMock()
+                update = SimpleNamespace(effective_user=SimpleNamespace(id=1),
+                                         effective_message=SimpleNamespace(reply_text=reply))
+                await runtime.panel(update, None)
+                text = reply.call_args.args[0]
+                self.assertIn(origin + '/#login=', text)
+                self.assertNotIn('reply_markup', reply.call_args.kwargs)
+                self.assertTrue(reply.call_args.kwargs['link_preview_options'].is_disabled)
+                token = text.split('#login=')[1]
+                self.assertIsNotNone(runtime.sessions.exchange(token))
+                self.assertIsNone(runtime.sessions.exchange(token))
+
+    async def test_public_origin_keeps_sign_in_button(self):
+        runtime = SellerRuntime(Mock(get_seller=Mock(return_value={'id': 1}),
+                                     get_user=Mock(return_value={'id': 1})), 'https://seller.test', 8081, True)
+        reply = AsyncMock()
+        update = SimpleNamespace(effective_user=SimpleNamespace(id=1),
+                                 effective_message=SimpleNamespace(reply_text=reply))
+        await runtime.panel(update, None)
+        button = reply.call_args.kwargs['reply_markup'].inline_keyboard[0][0]
+        self.assertTrue(button.url.startswith('https://seller.test/#login='))
 
 
 class SellerApiTests(unittest.IsolatedAsyncioTestCase):

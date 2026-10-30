@@ -10,6 +10,12 @@ Set `SELLER_PANEL_URL=https://144.24.232.0` in `/etc/smebot/bot.env` to enable i
 Telegram process, and is reached from Nginx through the dedicated reverse SSH
 tunnel. Do not bind it to a public interface or copy database credentials to the web VM.
 
+For local testing, serve the frontend and proxy `/api/` over locally trusted HTTPS,
+then set `SELLER_PANEL_URL=https://localhost:8443` in the test bot's configuration.
+Telegram rejects localhost URLs in inline keyboard buttons, so `/panel` returns
+a private link to copy into the browser on that laptop instead. The one-use link,
+expiry, secure cookie and origin checks are the same as for a hosted panel.
+
 `/panel` and `/start seller_panel` return a five-minute, one-use private sign-in
 link to a registered seller. It exchanges a URL fragment for an eight-hour opaque
 Secure/HttpOnly/SameSite=Strict cookie. Only token hashes are retained in memory;
